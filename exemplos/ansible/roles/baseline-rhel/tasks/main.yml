@@ -1,0 +1,174 @@
+---
+# Linha de base do sistema operacional, aplicada a toda máquina da plataforma.
+#
+# Regra deste papel: é idempotente, e isso é TESTADO. O pipeline roda o papel
+# duas vezes contra uma máquina descartável e falha se a segunda execução
+# relatar qualquer "changed". Papel que muda algo a cada execução esconde
+# desvio de configuração, porque ninguém mais distingue normal de anormal.
+
+- name: Repositórios internos apontados para o espelho da Secretaria
+  ansible.builtin.template:
+    src: sefaz-mirror.repo.j2
+    dest: /etc/yum.repos.d/sefaz-mirror.repo
+    owner: root
+    group: root
+    mode: "0644"
+  notify: limpar cache dnf
+
+- name: Pacotes da linha de base
+  ansible.builtin.dnf:
+    name:
+      - chrony
+      - firewalld
+      - policycoreutils-python-utils
+      - audit
+      - sos
+      - tuned
+      - nfs-utils
+      - python3-libselinux
+    state: present
+
+- name: SELinux em modo obrigatório
+  ansible.posix.selinux:
+    policy: targeted
+    state: enforcing
+  # Desligar o SELinux é a saída fácil que vira dívida permanente. Quando um
+  # serviço não sobe, a correção é o contexto correto, nunca o modo permissivo.
+
+- name: Horário sincronizado com os servidores internos
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony.conf
+    mode: "0644"
+  notify: reiniciar chronyd
+  # Relógio fora de sincronia quebra certificado TLS, token de autenticação e
+  # a correlação de log entre máquinas durante investigação de incidente.
+
+- name: Serviços da linha de base ativos
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [chronyd, firewalld, auditd]
+
+# ---------------------------------------------------------------------------
+# Acesso remoto
+# ---------------------------------------------------------------------------
+
+- name: Endurecimento do acesso por SSH
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config.d/50-sefaz.conf
+    create: true
+    mode: "0600"
+    regexp: "^{{ item.chave }}"
+    line: "{{ item.chave }} {{ item.valor }}"
+  loop:
+    - { chave: PermitRootLogin,        valor: "no" }
+    - { chave: PasswordAuthentication, valor: "no" }
+    - { chave: PubkeyAuthentication,   valor: "yes" }
+    - { chave: X11Forwarding,          valor: "no" }
+    - { chave: ClientAliveInterval,    valor: "300" }
+    - { chave: MaxAuthTries,           valor: "3" }
+    - { chave: AllowGroups,            valor: "sefaz-infra" }
+  notify: validar e recarregar sshd
+  # O handler valida com sshd -t ANTES de recarregar. Sem isso, um erro de
+  # digitação neste arquivo deixa a máquina inacessível.
+
+- name: Grupo de administração de infraestrutura
+  ansible.builtin.group:
+    name: sefaz-infra
+    state: present
+
+- name: Contas de serviço com chave pública
+  ansible.builtin.user:
+    name: "{{ item.nome }}"
+    groups: sefaz-infra
+    append: true
+    shell: /bin/bash
+    state: present
+  loop: "{{ contas_infra }}"
+  no_log: true
+
+- name: Chaves autorizadas
+  ansible.posix.authorized_key:
+    user: "{{ item.nome }}"
+    key: "{{ item.chave_publica }}"
+    exclusive: true   # remove chave que não está mais no inventário
+  loop: "{{ contas_infra }}"
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Firewall — negação por padrão, com liberação declarada
+# ---------------------------------------------------------------------------
+
+- name: Zona padrão restritiva
+  ansible.posix.firewalld:
+    zone: drop
+    state: present
+    permanent: true
+
+- name: Portas liberadas conforme a função do nó
+  ansible.posix.firewalld:
+    port: "{{ item.porta }}/{{ item.protocolo }}"
+    source: "{{ item.origem }}"
+    zone: internal
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ portas_por_funcao[funcao_do_no] }}"
+
+# ---------------------------------------------------------------------------
+# Preparação para nó de Kubernetes
+# ---------------------------------------------------------------------------
+
+- name: Swap desligado
+  ansible.builtin.mount:
+    path: swap
+    fstype: swap
+    state: absent
+  # O kubelet não lida bem com swap: ele decide desalojar com base em memória
+  # disponível, e swap mascara a pressão real até a máquina ficar inutilizável.
+
+- name: Parâmetros de kernel para rede de contêiner
+  ansible.posix.sysctl:
+    name: "{{ item.nome }}"
+    value: "{{ item.valor }}"
+    sysctl_file: /etc/sysctl.d/90-kubernetes.conf
+    reload: true
+  loop:
+    - { nome: net.ipv4.ip_forward,                 valor: "1" }
+    - { nome: net.bridge.bridge-nf-call-iptables,  valor: "1" }
+    - { nome: net.ipv4.conf.all.rp_filter,         valor: "1" }
+    - { nome: fs.inotify.max_user_instances,       valor: "8192" }
+    - { nome: fs.inotify.max_user_watches,         valor: "524288" }
+    # Os dois últimos: o padrão do RHEL é baixo demais para um nó com muitos
+    # pods, e o sintoma é obscuro — o kubelet para de observar arquivos e os
+    # pods ficam presos em ContainerCreating sem erro claro.
+
+- name: Volume dedicado para o runtime de contêiner
+  ansible.builtin.filesystem:
+    fstype: xfs
+    dev: /dev/sdb
+  # Imagem e log de contêiner num volume separado. Sem isso, uma aplicação que
+  # registra demais enche a raiz e derruba o nó inteiro, não só a aplicação.
+
+- name: Montagem do volume de contêineres
+  ansible.posix.mount:
+    path: /var/lib/containers
+    src: /dev/sdb
+    fstype: xfs
+    opts: defaults,noatime,pquota
+    state: mounted
+
+# ---------------------------------------------------------------------------
+# Agentes
+# ---------------------------------------------------------------------------
+
+- name: Exportador de métricas do nó
+  ansible.builtin.include_role:
+    name: node-exporter
+
+- name: Agente de backup
+  ansible.builtin.include_role:
+    name: agente-backup
+  when: funcao_do_no in ['banco', 'plataforma-estado']

@@ -1,0 +1,125 @@
+{{/*
+Chart base da plataforma. O time preenche valores; tudo abaixo vem de graça.
+
+Cada bloco aqui corresponde a uma causa conhecida de incidente. Comentário no
+template, em vez de documentação separada, porque é onde a pessoa está olhando
+quando precisa entender por que a regra existe.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app-base.fullname" . }}
+  labels: {{- include "app-base.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0        # nunca reduz capacidade durante a atualização
+      maxSurge: 1
+  selector:
+    matchLabels: {{- include "app-base.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "app-base.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Força a recriação do pod quando o ConfigMap muda. Sem isto, alterar
+        # configuração não tem efeito até alguém reiniciar à mão.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "app-base.fullname" . }}
+
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+
+      {{- if gt (int .Values.replicaCount) 1 }}
+      # Espalha as réplicas por rack. Perder um rack remove parte da capacidade,
+      # não a aplicação. whenUnsatisfiable: ScheduleAnyway evita que o pod fique
+      # pendente para sempre quando um rack está em manutenção.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "app-base.selectorLabels" . | nindent 14 }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "app-base.selectorLabels" . | nindent 14 }}
+      {{- end }}
+
+      # Tempo para a aplicação terminar as requisições em andamento.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 45 }}
+
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}@{{ required "digest obrigatório: a plataforma não aceita tag mutável" .Values.image.digest }}"
+          imagePullPolicy: IfNotPresent
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+
+          ports:
+            - { name: http,    containerPort: {{ .Values.service.port }} }
+            - { name: metrics, containerPort: 9090 }
+
+          # As três sondas são distintas de propósito.
+          #
+          # startup  — dá tempo à aplicação lenta de subir sem que a liveness a mate.
+          # readiness — tira do balanceamento quando a dependência está ruim.
+          # liveness  — reinicia só quando o processo travou de verdade.
+          #
+          # Usar a mesma verificação nas três é a causa clássica de reinício em
+          # cascata: o banco fica lento, a readiness falha, a liveness mata o pod,
+          # e a carga se concentra nos pods restantes até derrubar todos.
+          startupProbe:
+            httpGet: { path: /health/startup, port: http }
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 15
+            failureThreshold: 3
+
+          lifecycle:
+            preStop:
+              # Sai do balanceamento ANTES de parar de aceitar conexão. Sem esta
+              # pausa, o roteador ainda envia tráfego para um pod em encerramento
+              # e o usuário vê erro de conexão durante toda atualização.
+              exec: { command: ["sh", "-c", "sleep 8"] }
+
+          # Obrigatórios. Pod sem requests faz o escalonador decidir errado e é
+          # a causa mais comum de nó desequilibrado e de desalojamento em cascata.
+          resources: {{- toYaml (required "requests e limits são obrigatórios" .Values.resources) | nindent 12 }}
+
+          env:
+            - { name: OTEL_SERVICE_NAME,      value: {{ include "app-base.fullname" . }} }
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.observabilidade:4317" }
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace={{ .Release.Namespace }},deployment.environment={{ .Values.ambiente }},sefaz.tier={{ .Values.tier }}"
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          envFrom:
+            - configMapRef: { name: {{ include "app-base.fullname" . }}-config }
+            # Materializado pelo External Secrets a partir do Vault.
+            - secretRef:    { name: {{ include "app-base.fullname" . }}-secret }
+
+          volumeMounts:
+            # readOnlyRootFilesystem exige volume gravável explícito para temporários.
+            - { name: tmp,      mountPath: /tmp }
+            - { name: cache,    mountPath: /app/cache }
+
+      volumes:
+        - { name: tmp,   emptyDir: { medium: Memory, sizeLimit: 64Mi } }
+        - { name: cache, emptyDir: { sizeLimit: 512Mi } }

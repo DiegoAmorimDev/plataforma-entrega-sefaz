@@ -1,0 +1,151 @@
+# Políticas de admissão. É aqui que a regra escrita no documento vira regra
+# aplicada: o cluster recusa o pod que não cumpre, sem depender de alguém
+# lembrar durante a revisão.
+#
+# Toda política entra primeiro em modo Audit por 30 dias, com relatório por
+# time. Só depois vira Enforce. Ligar Enforce de uma vez num parque de 60
+# aplicações quebra entrega de gente que não foi avisada.
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: exigir-imagem-assinada
+  annotations:
+    policies.kyverno.io/description: >-
+      A imagem precisa vir do registry interno e ter assinatura válida da
+      esteira. Junto com a referência por digest no manifesto, é isto que
+      responde à auditoria: o que está em produção é o que passou pelos
+      controles.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  webhookTimeoutSeconds: 10
+  failurePolicy: Fail      # indisponibilidade do Kyverno impede admissão, não libera
+
+  rules:
+    - name: so-registry-interno
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: ["*-prd", "*-hml"]
+      validate:
+        message: "Imagem precisa vir de harbor.sefaz.interno."
+        pattern:
+          spec:
+            containers:
+              - image: "harbor.sefaz.interno/*"
+
+    - name: assinatura-da-esteira
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: ["*-prd"]
+      verifyImages:
+        - imageReferences: ["harbor.sefaz.interno/*"]
+          failureAction: Enforce
+          # Grava o digest resolvido no pod. Mesmo que alguém use tag, o que
+          # executa fica registrado por conteúdo.
+          mutateDigest: true
+          required: true
+          attestors:
+            - entries:
+                - keys:
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...chave-publica-da-esteira...
+                      -----END PUBLIC KEY-----
+
+    - name: digest-nao-tag
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: ["*-prd"]
+      validate:
+        message: >-
+          Em produção, a imagem precisa ser referenciada por digest (@sha256:),
+          não por tag. Tag é ponteiro mutável e pode ser reapontada.
+        pattern:
+          spec:
+            containers:
+              - image: "*@sha256:*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: linha-de-base-do-pod
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: recursos-declarados
+      match:
+        any: [{ resources: { kinds: [Pod] } }]
+      validate:
+        message: >-
+          Declare requests e limits de cpu e memória. Pod sem requests faz o
+          escalonador decidir errado e é a causa mais comum de nó
+          desequilibrado.
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.resources.requests.memory || '' }}"
+                    operator: Equals
+                    value: ""
+                  - key: "{{ element.resources.limits.memory || '' }}"
+                    operator: Equals
+                    value: ""
+
+    - name: sondas-obrigatorias
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: ["*-prd", "*-hml"]
+      validate:
+        message: "Defina readinessProbe e livenessProbe, com verificações distintas."
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              readinessProbe: { "?*": "?*" }
+              livenessProbe:  { "?*": "?*" }
+
+    - name: sem-privilegio
+      match:
+        any: [{ resources: { kinds: [Pod] } }]
+      validate:
+        message: "Contêiner privilegiado ou com escalonamento de privilégio não é admitido."
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              securityContext:
+                privileged: "false"
+                allowPrivilegeEscalation: "false"
+---
+# Em modo auditoria: coleta evidência antes de obrigar. O relatório por time
+# mostra quantos pods violariam a regra, e a data de virada é negociada com o
+# número na mão.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: auditoria-raiz-somente-leitura
+  annotations:
+    sefaz.io/vira-enforce-em: "2026-09-01"
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: sistema-de-arquivos-raiz-somente-leitura
+      match:
+        any: [{ resources: { kinds: [Pod] } }]
+      validate:
+        message: "Use readOnlyRootFilesystem com volume temporário declarado."
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              securityContext:
+                readOnlyRootFilesystem: "true"

@@ -1,0 +1,86 @@
+# plataforma/templates-ci @ v3 — /base/imagem.yml
+#
+# A imagem é construída UMA vez, só a partir de main. Nenhum estágio posterior
+# reconstrói. O digest produzido aqui é o que atravessa dev, hml e prd.
+#
+# Kaniko em vez de docker-in-docker: não exige contêiner privilegiado, que a
+# política de admissão da plataforma recusa.
+
+construir-imagem:
+  extends: .runner-comum
+  stage: imagem
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - echo "{\"auths\":{\"${REGISTRY}\":{\"auth\":\"${HARBOR_AUTH}\"}}}" > /kaniko/.docker/config.json
+
+    # --reproducible zera o horário das camadas: o mesmo conteúdo gera o mesmo
+    # digest, o que torna o build verificável por terceiro.
+    - /kaniko/executor
+        --context "${CI_PROJECT_DIR}"
+        --dockerfile "${CI_PROJECT_DIR}/Dockerfile"
+        --destination "${IMAGEM}:${CI_COMMIT_SHORT_SHA}"
+        --destination "${IMAGEM}:${CI_COMMIT_TAG:-sem-tag}"
+        --reproducible
+        --digest-file /tmp/digest
+        --build-arg BASE=${REGISTRY}/base/dotnet-runtime:8.0-ubi9
+        --label org.opencontainers.image.revision="${CI_COMMIT_SHA}"
+        --label org.opencontainers.image.source="${CI_PROJECT_URL}"
+        --label sefaz.time="${APP_TIME}"
+        --label sefaz.tier="${APP_TIER}"
+
+    - echo "IMAGEM_DIGEST=$(cat /tmp/digest)" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+
+# ---------------------------------------------------------------------------
+# BLOQUEIA — vulnerabilidade crítica em camada própria da imagem.
+#
+# --ignore-unfixed pela mesma razão do arquivo de segurança. Vulnerabilidade na
+# imagem BASE não reprova o time: gera chamado para a plataforma, que é quem
+# mantém a base.
+# ---------------------------------------------------------------------------
+varrer-imagem:
+  extends: .runner-comum
+  stage: imagem
+  needs: [construir-imagem]
+  image: aquasec/trivy:latest
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - trivy image --severity CRITICAL --ignore-unfixed --exit-code 1
+        --ignorefile .trivyignore-base
+        "${IMAGEM}@${IMAGEM_DIGEST}"
+
+gerar-sbom:
+  extends: .runner-comum
+  stage: imagem
+  needs: [construir-imagem]
+  image: anchore/syft:latest
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    # A lista de componentes é o que responde "quais das 60 aplicações usam esta
+    # biblioteca" sem abrir chamado para doze times.
+    - syft "${IMAGEM}@${IMAGEM_DIGEST}" -o cyclonedx-json > sbom.json
+    - cosign attach sbom --sbom sbom.json "${IMAGEM}@${IMAGEM_DIGEST}"
+  artifacts:
+    paths: [sbom.json]
+    expire_in: 5 years
+
+assinar-imagem:
+  extends: .runner-restrito
+  stage: imagem
+  needs: [construir-imagem, varrer-imagem]
+  image: gcr.io/projectsigstore/cosign:latest
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    # A chave privada vive no Vault e é obtida pela identidade do job, não por
+    # variável de CI de longa duração.
+    - cosign sign --key hashivault://cosign-plataforma "${IMAGEM}@${IMAGEM_DIGEST}"
+    - cosign verify --key hashivault://cosign-plataforma "${IMAGEM}@${IMAGEM_DIGEST}"

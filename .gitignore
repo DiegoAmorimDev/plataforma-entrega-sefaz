@@ -1,0 +1,7 @@
+# Material de preparação pessoal, fora da entrega
+video/
+
+# Artefatos locais
+*.pdf
+.DS_Store
+Thumbs.db

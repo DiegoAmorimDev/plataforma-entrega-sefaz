@@ -1,0 +1,91 @@
+# plataforma/templates-ci @ v3 — /base/promocao.yml
+#
+# Aqui termina o pipeline e começa o GitOps. Nenhum job abaixo tem kubeconfig,
+# e os runners restritos não têm rota de rede até o servidor de API dos clusters.
+# A implantação acontece porque o Argo CD observa o repositório de manifestos.
+
+.promover:
+  extends: .runner-restrito
+  image: ${REGISTRY}/plataforma/promotor:v3
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - git clone "https://promotor:${TOKEN_MANIFESTOS}@${REPO_MANIFESTOS}" /repo
+    - cd "/repo/apps/${APP_TIME}/${APP_NAME}/overlays/${AMBIENTE_DESTINO}"
+
+    # A promoção move o digest. Nunca reconstrói, nunca reescreve tag.
+    - |
+      yq -i '
+        .images[0].digest = strenv(IMAGEM_DIGEST) |
+        .images[0].digest line_comment = strenv(COMENTARIO)
+      ' kustomization.yaml
+
+    - git -C /repo commit -am "promove ${APP_NAME} para ${AMBIENTE_DESTINO}: ${IMAGEM_DIGEST}"
+
+# ---------------------------------------------------------------------------
+# dev — empurra direto. Erro em dev custa pouco e o retorno é rápido.
+# ---------------------------------------------------------------------------
+promover-dev:
+  extends: .promover
+  stage: promocao
+  needs: [assinar-imagem]
+  variables:
+    AMBIENTE_DESTINO: dev
+    COMENTARIO: "${CI_COMMIT_SHORT_SHA} em ${CI_PIPELINE_CREATED_AT}"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - !reference [.promover, script]
+    - git -C /repo push origin main
+
+# ---------------------------------------------------------------------------
+# hml — abre merge request com aprovação automática quando o teste de fumaça
+# em dev passou. O registro fica no histórico do Git, não num log de pipeline.
+# ---------------------------------------------------------------------------
+promover-hml:
+  extends: .promover
+  stage: promocao
+  needs: [promover-dev]
+  variables:
+    AMBIENTE_DESTINO: hml
+    COMENTARIO: "${CI_COMMIT_SHORT_SHA}, validado em dev"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: on_success
+  script:
+    - /scripts/aguardar-saude-argo.sh "${APP_NAME}-dev" --timeout 600
+    - /scripts/teste-fumaca.sh "https://${APP_NAME}.dev.sefaz.interno"
+    - !reference [.promover, script]
+    - git -C /repo push origin "HEAD:promove-${APP_NAME}-hml-${CI_COMMIT_SHORT_SHA}"
+        -o merge_request.create
+        -o merge_request.target=main
+        -o merge_request.merge_when_pipeline_succeeds
+
+# ---------------------------------------------------------------------------
+# prd — manual, com duas aprovações humanas no merge request e janela de
+# mudança aplicada pelo Argo CD, não por este job.
+#
+# O job apenas prepara o merge request. Quem decide são as pessoas que aprovam.
+# ---------------------------------------------------------------------------
+promover-prd:
+  extends: .promover
+  stage: promocao
+  needs: [promover-hml]
+  when: manual
+  allow_failure: false
+  environment:
+    name: producao
+    url: https://${APP_NAME}.sefaz.gov.br
+  variables:
+    AMBIENTE_DESTINO: prd
+    COMENTARIO: "${CI_COMMIT_SHORT_SHA}, validado em hml"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - /scripts/verificar-permanencia-hml.sh "${APP_NAME}" --minimo-horas 24
+    - !reference [.promover, script]
+    - git -C /repo push origin "HEAD:promove-${APP_NAME}-prd-${CI_COMMIT_SHORT_SHA}"
+        -o merge_request.create
+        -o merge_request.target=main
+        -o merge_request.title="Promove ${APP_NAME} para produção"
+        -o merge_request.description="Digest ${IMAGEM_DIGEST}. Exige duas aprovações."

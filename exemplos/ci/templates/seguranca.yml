@@ -1,0 +1,83 @@
+# plataforma/templates-ci @ v3 — /base/seguranca.yml
+#
+# A regra que organiza este arquivo: bloqueia o que o time consegue corrigir hoje.
+# O que depende de terceiro informa e gera acompanhamento.
+
+# ---------------------------------------------------------------------------
+# BLOQUEIA — segredo em código
+# ---------------------------------------------------------------------------
+segredo-no-codigo:
+  extends: .runner-comum
+  stage: seguranca
+  image: zricethezav/gitleaks:latest
+  script:
+    - gitleaks detect --source . --redact --report-format sarif --report-path gitleaks.sarif
+  allow_failure: false
+  artifacts:
+    when: always
+    paths: [gitleaks.sarif]
+
+# ---------------------------------------------------------------------------
+# BLOQUEIA — dependência vulnerável COM correção publicada
+#
+# O filtro --ignore-unfixed é a decisão central deste arquivo. CVE crítico sem
+# patch disponível não dá ao time nenhuma ação possível; bloquear ali só ensina
+# o time a desligar a verificação.
+# ---------------------------------------------------------------------------
+dependencia-vulneravel:
+  extends: .runner-comum
+  stage: seguranca
+  image: aquasec/trivy:latest
+  script:
+    - trivy fs --scanners vuln
+        --severity CRITICAL
+        --ignore-unfixed
+        --exit-code 1
+        --format table
+        .
+  allow_failure: false
+
+# ---------------------------------------------------------------------------
+# INFORMA — vulnerabilidade sem correção disponível
+#
+# Não reprova. Publica o relatório e abre issue no projeto com prazo de
+# reavaliação semanal. Quando o patch sair, o job acima passa a bloquear sozinho.
+# ---------------------------------------------------------------------------
+dependencia-sem-correcao:
+  extends: .runner-comum
+  stage: seguranca
+  image: aquasec/trivy:latest
+  script:
+    - trivy fs --scanners vuln --severity CRITICAL,HIGH --format json -o sem-correcao.json .
+    - /scripts/abrir-issue-acompanhamento.sh sem-correcao.json
+  allow_failure: true
+  artifacts:
+    paths: [sem-correcao.json]
+    expire_in: 90 days
+
+# ---------------------------------------------------------------------------
+# BLOQUEIA — análise estática de segurança, achado confirmado
+# ---------------------------------------------------------------------------
+analise-estatica:
+  extends: .runner-comum
+  stage: seguranca
+  image: returntocorp/semgrep:latest
+  script:
+    - semgrep ci --config p/owasp-top-ten --severity ERROR
+  allow_failure: false
+
+# ---------------------------------------------------------------------------
+# BLOQUEIA — manifesto inválido e violação de política de admissão
+#
+# Rodar a política do Kyverno aqui é o que evita descobrir a violação só quando
+# o Argo CD tenta sincronizar, onde o erro fica longe de quem o causou.
+# ---------------------------------------------------------------------------
+validar-manifestos:
+  extends: .runner-comum
+  stage: seguranca
+  image: ghcr.io/kyverno/kyverno-cli:latest
+  script:
+    - kustomize build manifests/overlays/hml > /tmp/render.yaml
+    - kubeconform -strict -summary /tmp/render.yaml
+    - kyverno apply /politicas/obrigatorias/ --resource /tmp/render.yaml --fail-on-violation
+  allow_failure: false

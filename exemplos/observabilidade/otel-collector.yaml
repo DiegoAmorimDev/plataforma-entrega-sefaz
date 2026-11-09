@@ -1,0 +1,118 @@
+# Coletor OpenTelemetry — ponto único de entrada de métrica, log e trace.
+#
+# Por que um coletor no meio, em vez de a aplicação enviar direto ao backend:
+# trocar Tempo por Jaeger, ou Loki por Elasticsearch, vira alteração deste
+# arquivo. Sem ele, seria alteração em 60 aplicações.
+#
+# Dois níveis: um DaemonSet por nó, que recebe da aplicação local, e um
+# Deployment de entrada, que faz amostragem de cauda e precisa ver o trace
+# inteiro para decidir.
+
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-gateway
+  namespace: observabilidade
+spec:
+  mode: deployment
+  replicas: 3
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc: { endpoint: 0.0.0.0:4317 }
+          http: { endpoint: 0.0.0.0:4318 }
+
+    processors:
+      # Protege o coletor de si mesmo. Sem este limite, um pico de telemetria
+      # derruba o coletor, e perder telemetria durante um incidente é
+      # exatamente o pior momento para perder telemetria.
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+
+      # Carimba tudo com namespace, pod, nó e time dono. É este carimbo que o
+      # Alertmanager usa para rotear o alerta ao time certo.
+      k8sattributes:
+        auth_type: serviceAccount
+        extract:
+          metadata: [k8s.namespace.name, k8s.pod.name, k8s.node.name, k8s.deployment.name]
+          labels:
+            - { tag_name: sefaz.time, key: sefaz.io/time,     from: pod }
+            - { tag_name: sefaz.tier, key: sefaz.io/tier,     from: pod }
+            - { tag_name: ambiente,   key: sefaz.io/ambiente, from: pod }
+
+      # Rede de segurança contra dado sensível em log e atributo de trace.
+      # A primeira linha de defesa continua sendo a aplicação não registrar.
+      attributes/mascarar:
+        actions:
+          - { key: cpf,            action: delete }
+          - { key: cnpj,           action: delete }
+          - { key: http.request.header.authorization, action: delete }
+          - { key: db.statement,   action: hash }
+      transform/mascarar-corpo:
+        log_statements:
+          - context: log
+            statements:
+              # CPF no corpo da mensagem, em qualquer formato.
+              - replace_pattern(body, "\\d{3}\\.?\\d{3}\\.?\\d{3}-?\\d{2}", "[CPF]")
+              - replace_pattern(body, "\\d{2}\\.?\\d{3}\\.?\\d{3}/?\\d{4}-?\\d{2}", "[CNPJ]")
+
+      # Amostragem de cauda: decide DEPOIS de ver o trace inteiro.
+      # A amostragem de cabeça descartaria justamente o trace que deu errado.
+      tail_sampling:
+        decision_wait: 10s
+        num_traces: 100000
+        policies:
+          - name: todo-erro
+            type: status_code
+            status_code: { status_codes: [ERROR] }
+          - name: todo-lento
+            type: latency
+            latency: { threshold_ms: 1000 }
+          - name: rota-critica
+            type: string_attribute
+            string_attribute: { key: sefaz.rota.critica, values: ["true"] }
+          - name: amostra-do-resto
+            type: probabilistic
+            probabilistic: { sampling_percentage: 1 }
+
+      batch:
+        timeout: 5s
+        send_batch_size: 8192
+
+    exporters:
+      otlp/tempo:
+        endpoint: tempo-distributor.observabilidade:4317
+        tls: { insecure: true }
+        sending_queue: { enabled: true, queue_size: 10000 }
+        retry_on_failure: { enabled: true, max_elapsed_time: 300s }
+
+      otlphttp/loki:
+        endpoint: http://loki-gateway.observabilidade/otlp
+        sending_queue: { enabled: true }
+
+      prometheusremotewrite:
+        endpoint: http://thanos-receive.observabilidade:19291/api/v1/receive
+        # Sem isto, as métricas chegam sem namespace e pod, e deixam de ser
+        # cruzáveis com log e trace.
+        resource_to_telemetry_conversion: { enabled: true }
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, attributes/mascarar, tail_sampling, batch]
+          exporters: [otlp/tempo]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, transform/mascarar-corpo, batch]
+          exporters: [otlphttp/loki]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [prometheusremotewrite]
+
+      telemetry:
+        metrics: { level: detailed }   # o coletor também é monitorado

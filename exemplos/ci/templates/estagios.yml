@@ -1,0 +1,52 @@
+# plataforma/templates-ci @ v3 — /base/estagios.yml
+#
+# Define a ordem dos estágios e as regras comuns. Todo job da plataforma herda
+# daqui a política de repetição e o pool de runner correto.
+
+stages:
+  - validacao
+  - build
+  - teste
+  - qualidade
+  - seguranca
+  - imagem
+  - promocao
+
+default:
+  interruptible: true
+  retry:
+    max: 2
+    # Repete apenas falha de infraestrutura. Falha de teste nunca é repetida:
+    # teste intermitente precisa ser corrigido, não mascarado.
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - scheduler_failure
+
+variables:
+  REGISTRY: harbor.sefaz.interno
+  IMAGEM: ${REGISTRY}/${APP_TIME}/${APP_NAME}
+  REPO_MANIFESTOS: git.sefaz.interno/plataforma/manifestos-apps.git
+
+# Runners comuns: build e teste. Sem acesso de rede a produção.
+.runner-comum:
+  tags:
+    - kubernetes
+    - plataforma
+
+# Runner restrito: só os jobs que escrevem no repositório de manifestos.
+# Tem token de escrita; a rede permite apenas GitLab e Harbor.
+.runner-restrito:
+  tags:
+    - kubernetes
+    - restrito
+
+.job-teste-base:
+  extends: .runner-comum
+  artifacts:
+    when: always
+    reports:
+      junit: "**/TestResults/*.trx"
+    paths:
+      - "**/coverage.cobertura.xml"
+    expire_in: 30 days

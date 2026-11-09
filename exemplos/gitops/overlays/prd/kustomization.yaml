@@ -1,0 +1,67 @@
+# apps/fiscal/nfe-emissor/overlays/prd/kustomization.yaml
+#
+# Este arquivo é a produção. Promover uma versão é alterar UMA linha aqui:
+# o digest. O comentário ao lado é escrito pelo próprio pipeline, para que a
+# revisão do merge request consiga ler o que está mudando.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fiscal-nfe-emissor-prd
+
+resources:
+  - ../../base
+  - pdb.yaml
+  - rollout-analise.yaml
+
+images:
+  - name: app
+    newName: harbor.sefaz.interno/fiscal/nfe-emissor
+    # ↓↓↓ A ÚNICA LINHA QUE A PROMOÇÃO ALTERA ↓↓↓
+    digest: sha256:9f2c7b4e1a8d3c5b7e9f0a2d4c6b8e1f3a5c7d9e0b2f4a6c8e0d2b4f6a8c0e2d  # 1.4.2, validado em hml desde 18/03 14:20
+
+replicas:
+  - name: nfe-emissor
+    count: 6
+
+patches:
+  - target:
+      kind: Deployment
+      name: nfe-emissor
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests: { cpu: "500m", memory: "1Gi" }
+          limits:   { cpu: "2",    memory: "2Gi" }
+
+      # Nível 1 roda em nós reservados, sem compartilhar com processamento em lote.
+      - op: add
+        path: /spec/template/spec/tolerations
+        value:
+          - key: sefaz.io/tier
+            operator: Equal
+            value: "1"
+            effect: NoSchedule
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value:
+          sefaz.io/pool: tier1
+
+configMapGenerator:
+  - name: nfe-emissor-config
+    behavior: merge
+    literals:
+      - AMBIENTE=producao
+      - LOG_LEVEL=Information
+      - OTEL_TRACES_SAMPLER_ARG=0.01
+      - AUTORIZADOR_URL=https://autorizador.sefaz.gov.br
+
+# Segredo NUNCA vive aqui. O External Secrets materializa a partir do Vault.
+secretGenerator: []
+
+labels:
+  - pairs:
+      sefaz.io/ambiente: producao
+      sefaz.io/tier: "1"
+      sefaz.io/time: fiscal

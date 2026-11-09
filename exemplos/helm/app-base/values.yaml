@@ -1,0 +1,63 @@
+# Chart base da plataforma — valores padrão.
+#
+# O arquivo que o time escreve costuma ter menos de 20 linhas, porque só
+# sobrescreve o que é específico da aplicação.
+
+replicaCount: 3
+ambiente: dev
+tier: "3"
+
+image:
+  repository: harbor.sefaz.interno/TIME/APP
+  digest: ""          # obrigatório; o chart falha sem ele, por decisão
+
+# Sem padrão. Obrigar o time a declarar é o que faz a conversa sobre consumo
+# acontecer antes de produção, e não durante o primeiro incidente de capacidade.
+resources: {}
+#  requests: { cpu: 200m, memory: 512Mi }
+#  limits:   { cpu: "1",  memory: 1Gi }
+
+service:
+  port: 8080
+
+# Emite Route no OpenShift e Ingress no RKE2. O time não escreve nenhum dos dois.
+rota:
+  habilitada: true
+  host: ""
+  tls: true
+  publica: false      # true publica no HAProxy externo
+
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# Orçamento de interrupção. Impede que a drenagem de dois nós em sequência
+# durante manutenção derrube a aplicação inteira.
+pdb:
+  habilitado: true
+  minAvailable: "50%"
+
+terminationGracePeriodSeconds: 45
+
+# Segredos vêm do Vault; aqui ficam apenas os caminhos, nunca os valores.
+segredos:
+  - caminho: fiscal/nfe-emissor/banco
+    chaves: [CONN_STRING, DB_USER, DB_PASSWORD]
+  - caminho: fiscal/nfe-emissor/certificado
+    chaves: [CERT_A1_PFX, CERT_A1_SENHA]
+
+observabilidade:
+  metricas: true
+  tracesSampleRate: 0.01
+  logLevel: Information
+
+# Dependências declaradas viram NetworkPolicy de saída. Sem declarar, o pod não
+# alcança nada além do DNS e do coletor de telemetria.
+dependencias:
+  bancos:
+    - { tipo: oracle, host: dbfiscal.sefaz.interno, porta: 1521 }
+  servicos: []
+  externos:
+    - { host: autorizador.sefaz.gov.br, porta: 443 }

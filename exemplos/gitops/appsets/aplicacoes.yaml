@@ -1,0 +1,123 @@
+# ApplicationSet que gera uma Application do Argo CD por aplicação e por ambiente.
+#
+# O efeito prático: aplicação nova não exige nenhuma configuração no Argo CD.
+# O processo de catálogo cria o diretório em manifestos-apps, e na próxima
+# varredura o gerador cria as três Applications sozinho.
+#
+# Sem isso, 60 aplicações em 3 ambientes seriam 180 objetos mantidos à mão.
+
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: aplicacoes-sefaz
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  generators:
+    # matrix: cruza "todo diretório de aplicação" com "todo ambiente".
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://git.sefaz.interno/plataforma/manifestos-apps.git
+              revision: main
+              directories:
+                - path: apps/*/*
+          - list:
+              elements:
+                - ambiente: dev
+                  cluster: https://api.dev-dc1.sefaz.interno:6443
+                  auto: "true"
+                  prune: "true"
+                - ambiente: hml
+                  cluster: https://api.hml-dc1.sefaz.interno:6443
+                  auto: "true"
+                  prune: "true"
+                - ambiente: prd
+                  cluster: https://api.prd-dc1.sefaz.interno:6443
+                  auto: "true"
+                  prune: "false"   # remoção em produção exige confirmação humana
+                - ambiente: prd
+                  cluster: https://api.prd-dc2.sefaz.interno:6443
+                  auto: "true"
+                  prune: "false"
+
+  template:
+    metadata:
+      name: '{{index .path.segments 2}}-{{.ambiente}}-{{trunc 3 (sha1sum .cluster)}}'
+      labels:
+        sefaz.time: '{{index .path.segments 1}}'
+        sefaz.ambiente: '{{.ambiente}}'
+      annotations:
+        # Abre o painel certo direto da tela do Argo CD.
+        link.argocd.argoproj.io/external-link: >-
+          https://grafana.sefaz.interno/d/app/{{index .path.segments 2}}
+    spec:
+      project: '{{index .path.segments 1}}'
+      source:
+        repoURL: https://git.sefaz.interno/plataforma/manifestos-apps.git
+        targetRevision: main
+        path: '{{.path.path}}/overlays/{{.ambiente}}'
+      destination:
+        server: '{{.cluster}}'
+        namespace: '{{index .path.segments 1}}-{{index .path.segments 2}}-{{.ambiente}}'
+      syncPolicy:
+        automated:
+          prune: '{{.prune}}'
+          selfHeal: true        # desfaz alteração manual no cluster em até 3 minutos
+          allowEmpty: false
+        syncOptions:
+          - CreateNamespace=false   # o namespace vem do processo de catálogo, com cota e NetworkPolicy
+          - ApplyOutOfSyncOnly=true
+          - RespectIgnoreDifferences=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 5m
+      ignoreDifferences:
+        # O HPA controla replicas. Sem isso, Argo CD e HPA brigam em loop.
+        - group: apps
+          kind: Deployment
+          jsonPointers:
+            - /spec/replicas
+  # Nunca remove Application sozinho. Diretório apagado por engano no Git
+  # não deve apagar a aplicação em produção.
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+---
+# Janela de mudança de produção. Fora dela, a sincronização fica pendente e
+# aguarda; não falha. Correção urgente usa a janela de exceção, com registro.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: fiscal
+  namespace: argocd
+spec:
+  description: Aplicações do time fiscal
+  sourceRepos:
+    - https://git.sefaz.interno/plataforma/manifestos-apps.git
+  destinations:
+    - server: '*'
+      namespace: 'fiscal-*'
+  clusterResourceWhitelist: []    # time não cria recurso de escopo global
+  namespaceResourceBlacklist:
+    - group: ''
+      kind: ResourceQuota
+    - group: ''
+      kind: LimitRange
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+  syncWindows:
+    - kind: allow
+      schedule: '0 7 * * 1-5'
+      duration: 12h
+      applications: ['*-prd-*']
+      manualSync: true
+    - kind: deny
+      schedule: '0 0 * * 0,6'
+      duration: 24h
+      applications: ['*-prd-*']
+      manualSync: true    # plantão ainda consegue sincronizar durante incidente

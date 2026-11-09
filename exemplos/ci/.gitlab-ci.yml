@@ -1,0 +1,37 @@
+# Pipeline de uma aplicação da plataforma.
+#
+# Este é o arquivo inteiro que o time escreve. Toda a lógica vem do template central,
+# fixado por tag. A plataforma nunca altera o comportamento de um pipeline em uso:
+# o time migra de v3 para v4 quando quiser.
+
+include:
+  - project: 'plataforma/templates-ci'
+    ref: 'v3'
+    file:
+      - '/base/estagios.yml'
+      - '/base/qualidade.yml'
+      - '/base/seguranca.yml'
+      - '/base/imagem.yml'
+      - '/base/promocao.yml'
+      - '/linguagens/dotnet.yml'
+
+variables:
+  APP_NAME: nfe-emissor
+  APP_TIME: fiscal
+  APP_TIER: "1"
+  SONAR_PROJECT_KEY: fiscal_nfe-emissor
+  DOTNET_VERSION: "8.0"
+  COBERTURA_MINIMA_CODIGO_NOVO: "80"
+
+# Abaixo, apenas o que foge do padrão desta aplicação.
+# A emissão de nota fiscal tem um teste de contrato contra o autorizador da SEFAZ
+# que não existe nas demais aplicações.
+
+teste-contrato-autorizador:
+  extends: .job-teste-base
+  stage: teste
+  script:
+    - dotnet test tests/Contrato --filter Categoria=Autorizador
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"

@@ -1,0 +1,44 @@
+# plataforma/templates-ci @ v3 — /base/qualidade.yml
+#
+# A decisão deste arquivo está na diferença entre os dois jobs abaixo.
+# O quality gate incide sobre CÓDIGO NOVO e bloqueia. A métrica do repositório
+# inteiro informa e vira meta trimestral do time.
+#
+# Razão: uma aplicação legada com 12% de cobertura não chega a 80% numa entrega.
+# Portão intransponível produz teste que executa linha sem verificar nada.
+
+sonarqube:
+  extends: .runner-comum
+  stage: qualidade
+  image: sonarsource/sonar-scanner-cli:latest
+  variables:
+    SONAR_HOST_URL: https://sonar.sefaz.interno
+    GIT_DEPTH: "0"   # o Sonar precisa do histórico para saber o que é código novo
+  script:
+    - sonar-scanner
+        -Dsonar.projectKey="${SONAR_PROJECT_KEY}"
+        -Dsonar.qualitygate.wait=true
+        -Dsonar.qualitygate.timeout=600
+        -Dsonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
+        -Dsonar.coverage.exclusions="**/Migrations/**,**/Program.cs"
+  allow_failure: false   # BLOQUEIA
+
+# Quality gate aplicado no SonarQube, perfil "SEFAZ - código novo":
+#   cobertura de linhas novas        >= 80%
+#   linhas duplicadas em código novo <=  3%
+#   vulnerabilidade em código novo    =  0 (alta ou crítica)
+#   bug bloqueante em código novo     =  0
+#   dívida técnica de código novo     <= A
+
+relatorio-divida-tecnica:
+  extends: .runner-comum
+  stage: qualidade
+  image: ${REGISTRY}/plataforma/sonar-report:v3
+  script:
+    # Mede o repositório inteiro e publica no painel do time. Não reprova nada.
+    - sonar-report --project "${SONAR_PROJECT_KEY}" --escopo total --saida divida.md
+    - /scripts/publicar-no-painel-do-time.sh divida.md "${APP_TIME}"
+  allow_failure: true    # INFORMA
+  artifacts:
+    paths: [divida.md]
+    expire_in: 90 days

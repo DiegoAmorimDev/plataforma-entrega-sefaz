@@ -1,0 +1,143 @@
+# Alerta por consumo de orçamento de erro.
+#
+# A ideia: a aplicação declara 99,9% de disponibilidade mensal, o que dá 43
+# minutos de erro permitido por mês. O alerta não dispara quando aparece erro.
+# Dispara quando a VELOCIDADE de consumo indica que o orçamento vai acabar.
+#
+# Duas janelas simultâneas em cada regra:
+#   - a longa detecta o problema real;
+#   - a curta confirma que ele ainda está acontecendo agora.
+# Só a longa demora a detectar queda total. Só a curta dispara com qualquer
+# soluço de 30 segundos. Exigir as duas dá detecção rápida sem ruído.
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: slo-nfe-emissor
+  namespace: fiscal-nfe-emissor-prd
+  labels:
+    sefaz.io/tier: "1"
+    sefaz.io/time: fiscal
+spec:
+  groups:
+    # -----------------------------------------------------------------------
+    # Regras de registro: pré-calculam a taxa de erro em várias janelas.
+    # Sem elas, cada avaliação de alerta recalcularia tudo do zero.
+    # -----------------------------------------------------------------------
+    - name: nfe-emissor.slo.registro
+      interval: 30s
+      rules:
+        - record: sefaz:erro_ratio:5m
+          expr: |
+            sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor",http_response_status_code=~"5.."}[5m]))
+            / sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor"}[5m]))
+        - record: sefaz:erro_ratio:30m
+          expr: |
+            sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor",http_response_status_code=~"5.."}[30m]))
+            / sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor"}[30m]))
+        - record: sefaz:erro_ratio:1h
+          expr: |
+            sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor",http_response_status_code=~"5.."}[1h]))
+            / sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor"}[1h]))
+        - record: sefaz:erro_ratio:6h
+          expr: |
+            sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor",http_response_status_code=~"5.."}[6h]))
+            / sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor"}[6h]))
+
+    - name: nfe-emissor.slo.alertas
+      rules:
+        # ---------------------------------------------------------------
+        # CHAMADA TELEFÔNICA — 14,4x. Orçamento do mês acaba em 2 dias.
+        # Limiar: 0.001 (1 - 0.999) * 14.4 = 0.0144
+        # ---------------------------------------------------------------
+        - alert: OrcamentoErroQueimaRapida
+          expr: |
+            sefaz:erro_ratio:1h  > (14.4 * 0.001)
+            and
+            sefaz:erro_ratio:5m  > (14.4 * 0.001)
+          for: 2m
+          labels:
+            severity: critical
+            tier: "1"
+            team: fiscal
+          annotations:
+            summary: "nfe-emissor consome orçamento de erro 14x acima do normal"
+            description: >-
+              Taxa de erro de {{ $value | humanizePercentage }} na última hora.
+              No ritmo atual, o orçamento mensal de 43 minutos acaba em 2 dias.
+            runbook_url: "https://wiki.sefaz.interno/runbooks/nfe-emissor/erro-5xx"
+            painel: "https://grafana.sefaz.interno/d/app/nfe-emissor"
+
+        # ---------------------------------------------------------------
+        # CHAMADA TELEFÔNICA — 6x. Degradação mais lenta, ainda grave.
+        # ---------------------------------------------------------------
+        - alert: OrcamentoErroQueimaMedia
+          expr: |
+            sefaz:erro_ratio:6h  > (6 * 0.001)
+            and
+            sefaz:erro_ratio:30m > (6 * 0.001)
+          for: 15m
+          labels:
+            severity: critical
+            tier: "1"
+            team: fiscal
+          annotations:
+            summary: "nfe-emissor em degradação sustentada há 6 horas"
+            description: "Taxa de erro de {{ $value | humanizePercentage }}."
+            runbook_url: "https://wiki.sefaz.interno/runbooks/nfe-emissor/erro-5xx"
+
+        # ---------------------------------------------------------------
+        # CHAMADO — 3x. Horário comercial resolve.
+        # ---------------------------------------------------------------
+        - alert: OrcamentoErroQueimaLenta
+          expr: sefaz:erro_ratio:6h > (3 * 0.001)
+          for: 1h
+          labels:
+            severity: warning
+            team: fiscal
+          annotations:
+            summary: "nfe-emissor consumindo orçamento acima do previsto"
+            runbook_url: "https://wiki.sefaz.interno/runbooks/nfe-emissor/erro-5xx"
+
+    # -----------------------------------------------------------------------
+    # Capacidade: alerta por PREVISÃO, não por percentual atual.
+    #
+    # Disco em 85% não é problema se cresce 1% ao mês. Disco em 60% que enche
+    # em 4 horas é. predict_linear responde a pergunta certa.
+    # -----------------------------------------------------------------------
+    - name: plataforma.capacidade
+      rules:
+        - alert: DiscoEncheEmBreve
+          expr: |
+            predict_linear(node_filesystem_avail_bytes{mountpoint="/var/lib/containers"}[6h], 4*3600) < 0
+          for: 15m
+          labels:
+            severity: critical
+            team: plataforma
+          annotations:
+            summary: "{{ $labels.instance }}: /var/lib/containers enche em menos de 4 horas"
+            runbook_url: "https://wiki.sefaz.interno/runbooks/plataforma/disco-cheio"
+
+        - alert: CertificadoVencendo
+          expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 21
+          for: 1h
+          labels:
+            severity: warning
+            team: plataforma
+          annotations:
+            summary: "Certificado de {{ $labels.instance }} vence em {{ $value | humanize }} dias"
+            runbook_url: "https://wiki.sefaz.interno/runbooks/plataforma/renovar-certificado"
+
+        # Memória contra o limite, não contra o nó. É o que antecipa o
+        # OOMKilled, que de outra forma aparece como reinício sem causa visível.
+        - alert: PodProximoDoLimiteDeMemoria
+          expr: |
+            container_memory_working_set_bytes{container!=""}
+            / on(namespace,pod,container) kube_pod_container_resource_limits{resource="memory"}
+            > 0.90
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} em 90% do limite de memória"
+            description: "O contêiner será encerrado por falta de memória se continuar."
