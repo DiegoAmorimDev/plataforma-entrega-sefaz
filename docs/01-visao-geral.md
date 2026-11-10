@@ -97,7 +97,8 @@ de aprender a operar um operador de banco durante uma migração de plataforma �
 ### Plano de observação
 
 **Prometheus** raspa a métrica da aplicação dentro de cada cluster, avalia ali mesmo as regras de
-alerta e guarda quinze dias. **Thanos** une os cinco clusters numa consulta só e guarda o histórico
+alerta e guarda quinze dias. Há um Alertmanager por cluster, inclusive em `prd-dc2`, e cada cluster
+envia o próprio sinal de vida para a vigilância externa. **Thanos** une os cinco clusters numa consulta só e guarda o histórico
 longo no MinIO. **Loki** recebe log, **Tempo** recebe trace, e o **coletor OpenTelemetry** é o
 ponto único por onde log e trace saem da aplicação. **Grafana** é o painel onde os três sinais se
 cruzam pelo identificador de trace.
@@ -152,8 +153,9 @@ sequenceDiagram
 
 A decisão de datacenter é do HAProxy, com base em
 verificação ativa de saúde do roteador, e nenhum componente dentro do cluster participa dela.
-O pool de conexão fica fora do pod, no PgBouncer, porque dezenas de réplicas abrindo conexão direta
-esgotam o limite do banco antes de esgotar a CPU. E a telemetria sai por caminho assíncrono: se o
+O pool de conexão fica fora do pod, porque dezenas de réplicas abrindo conexão direta esgotam o
+limite do banco antes de esgotar a CPU. No PostgreSQL, quem faz o pool é o PgBouncer; no Oracle, o
+pool fica residente no banco (DRCP), com o pool da aplicação limitado por réplica. E a telemetria sai por caminho assíncrono: se o
 coletor cair, o pedido continua sendo respondido.
 
 ---

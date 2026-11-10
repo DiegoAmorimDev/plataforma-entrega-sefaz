@@ -4,9 +4,18 @@
 # arquivo. Ele garante que o alerta chegue na pessoa certa, agrupado, e que um
 # nó caindo não produza 40 chamadas telefônicas sobre o mesmo evento.
 #
-# O Alertmanager roda em agrupamento com membros nos dois datacenters. Os
-# Prometheus de todos os clusters notificam o agrupamento inteiro; perder DC1
-# não deixa prd-dc2 sem quem notifique (docs/05).
+# Modelo: um Alertmanager por cluster, inclusive em prd-dc2. O Prometheus de
+# cada cluster notifica o Alertmanager do próprio cluster, e cada Alertmanager
+# envia o próprio sinal de vida à vigilância externa. Perder DC1 não deixa
+# prd-dc2 sem quem notifique, e a vigilância sabe qual cluster parou de falar
+# (docs/04 e docs/05). Alternativa descartada: um agrupamento único que
+# atravessa os dois sítios; ele exigiria um membro em DC2 fora do inventário e
+# faria a perda de DC1 depender do quórum. Custo aceito: o mesmo problema
+# em dois clusters gera duas notificações, uma por Alertmanager, e os
+# silenciamentos precisam ser criados em cada um.
+#
+# O rótulo "cluster" que as regras abaixo usam vem de external_labels do
+# Prometheus de cada cluster.
 
 global:
   resolve_timeout: 5m
@@ -85,23 +94,27 @@ route:
 # sobre um evento, e aprende a ignorar o grupo inteiro.
 # ---------------------------------------------------------------------------
 inhibit_rules:
+  # Nó fora suprime os alertas de pod não pronto do MESMO cluster. O alerta de
+  # pod (KubePodNotReady e parentes) tem namespace e pod, mas não tem o rótulo
+  # "node", então a ligação é só pelo cluster. Custo aceito: enquanto um nó
+  # está fora, um pod doente em outro nó do mesmo cluster também fica mudo. O
+  # orçamento de erro da aplicação afetada não é inibido e cobre o impacto no
+  # usuário. NoIndisponivel está em prometheus-rules.yaml.
   - source_matchers: [alertname="NoIndisponivel"]
-    target_matchers: [alertname=~"Pod.*|KubePod.*"]
-    equal: [cluster, node]
-
-  - source_matchers: [alertname="ClusterIndisponivel"]
-    target_matchers: [severity=~"critical|warning"]
+    target_matchers: [alertname=~"KubePod.*"]
     equal: [cluster]
 
-  # Crítico suprime o aviso do mesmo alerta. Receber os dois é ruído puro.
-  - source_matchers: [severity="critical"]
-    target_matchers: [severity="warning"]
-    equal: [alertname, namespace]
+  # O aviso de queima lenta cala quando a queima rápida ou média está ativa na
+  # mesma aplicação. Os alertas têm nomes diferentes, por isso o casamento é
+  # pelo namespace e não pelo nome. Receber os dois é ruído puro.
+  - source_matchers: [alertname=~"OrcamentoErroQueima(Rapida|Media)"]
+    target_matchers: [alertname="OrcamentoErroQueimaLenta"]
+    equal: [namespace]
 
-  # Durante janela de manutenção declarada, só o que for externo alerta.
-  - source_matchers: [alertname="ManutencaoProgramada"]
-    target_matchers: [escopo="interno"]
-    equal: [cluster]
+  # Não há inibição por "cluster indisponível" nem por "manutenção programada":
+  # nenhum dos dois alertas existe neste desenho. Cluster fora do ar é o caso
+  # do sinal de vida que para, tratado pela vigilância externa, e manutenção é
+  # silenciamento criado à mão, com prazo, na janela de mudança.
 
 time_intervals:
   - name: horario-estendido

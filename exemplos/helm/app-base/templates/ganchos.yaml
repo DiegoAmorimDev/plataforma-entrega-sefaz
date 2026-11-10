@@ -82,9 +82,10 @@ spec:
           volumeMounts: [{ name: changelog, mountPath: /changelog }]
       containers:
         # Imagem do Liquibase mantida pela plataforma, com os drivers de
-        # Oracle e PostgreSQL, espelhada no Harbor.
+        # Oracle e PostgreSQL, espelhada no Harbor. Referenciada por digest: a
+        # política de admissão recusa tag em hml e prd (politicas/).
         - name: liquibase
-          image: harbor.sefaz.interno/plataforma/liquibase:4.29
+          image: "{{ .Values.imagensPlataforma.liquibase }}"
           args: ["--changelog-file=db.changelog-master.yaml", "--search-path=/changelog", "update"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -142,7 +143,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: fumaca
-          image: harbor.sefaz.interno/plataforma/teste-fumaca:v3
+          image: "{{ .Values.imagensPlataforma.fumaca }}"
           # Sobe? Responde? Alcança as dependências declaradas? O script lê a
           # sonda de prontidão, que no Spring Boot inclui o banco.
           args: ["http://{{ $nome }}:{{ .Values.service.port }}{{ (index .Values.sondas .Values.linguagem).prontidao }}"]

@@ -20,6 +20,7 @@ spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  {{- /* Com autoscaling.enabled, templates/hpa.yaml cria o HPA e o Deployment omite replicas. */}}
   revisionHistoryLimit: 5
   strategy:
     type: RollingUpdate
@@ -126,9 +127,23 @@ spec:
             - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-agente-collector.observabilidade:4317" }
             - { name: OTEL_METRICS_EXPORTER,       value: prometheus }
             - { name: OTEL_EXPORTER_PROMETHEUS_PORT, value: "9464" }
-            - { name: OTEL_TRACES_SAMPLER,         value: parentbased_traceidratio }
+            # O agente Java 2.x usa http/protobuf por padrão; a 4317 do coletor é
+            # gRPC. Sem esta linha, protocolo e porta não casam.
+            - { name: OTEL_EXPORTER_OTLP_PROTOCOL, value: grpc }
+            # Todo trace sai do pod: a decisão de guardar é do coletor, que vê o
+            # trace inteiro (amostragem de cauda). Amostrar aqui, na cabeça,
+            # descartaria 99% dos traces antes de o coletor saber se deram erro.
+            # Custo: o coletor de entrada absorve o volume de todos os traces.
+            - { name: OTEL_TRACES_SAMPLER,         value: parentbased_always_on }
+            # O IP do pod vai como atributo de recurso: o gateway do coletor
+            # recebe os dados pelo agente do nó, e sem o IP de origem carimbaria
+            # o pod errado (otel-collector.yaml). POD_IP vem antes da variável
+            # que o usa, porque o Kubernetes só expande $(VAR) de variável já
+            # declarada.
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "deployment.environment={{ .Values.ambiente }},sefaz.tier={{ .Values.tier }}"
+              value: "deployment.environment={{ .Values.ambiente }},sefaz.tier={{ .Values.tier }},k8s.pod.ip=$(POD_IP)"
             # Só o Job da onda -1 migra o banco; a aplicação sobe sem Liquibase.
             - { name: SPRING_LIQUIBASE_ENABLED,    value: "false" }
             - name: POD_NAME

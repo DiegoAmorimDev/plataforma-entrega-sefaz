@@ -15,6 +15,13 @@
   script:
     # Token de escrita em manifestos-apps, lido do Conjur pela identidade do job.
     # A política só o entrega a job de branch protegido, de projeto autorizado.
+    #
+    # O token NÃO é limitado por caminho: quem controla o .gitlab-ci.yml do
+    # próprio projeto poderia trocar o script e editar overlays/prd direto em
+    # main. Quem limita é o repositório de manifestos: o CODEOWNERS dá dono a
+    # apps/*/*/overlays/hml*/ e apps/*/*/overlays/prd*/, e a proteção de main exige
+    # aprovação de code owner. O GitLab recusa o push direto que toque esses
+    # arquivos. O push direto só alcança overlays/dev/ (docs/06).
     - TOKEN_MANIFESTOS="$(conjur-segredo plataforma/esteira/token-manifestos)"
     - git clone "https://promotor:${TOKEN_MANIFESTOS}@${REPO_MANIFESTOS}" /repo
     - cd "/repo/apps/${APP_TIME}/${APP_NAME}/overlays/${AMBIENTE_DESTINO}"
@@ -45,7 +52,18 @@ promover-dev:
     - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   script:
     - !reference [.promover, script]
-    - git -C /repo push origin main
+    # O push direto compete com outros promotores (ADR-011). Antes de cada
+    # tentativa, rebase sobre main; depois de três falhas, o job falha.
+    - |
+      publicado=0
+      for tentativa in 1 2 3; do
+        if git -C /repo pull --rebase origin main && git -C /repo push origin main; then
+          publicado=1
+          break
+        fi
+        sleep $((tentativa * 3))
+      done
+      [ "${publicado}" = 1 ] || { echo "main avançou durante as 3 tentativas de push" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 # hml — abre merge request que se aprova sozinho quando o pipeline dele passa,
@@ -72,8 +90,21 @@ promover-hml:
     - git -C /repo push origin "HEAD:promove-${APP_NAME}-hml-${CI_COMMIT_SHORT_SHA}"
         -o merge_request.create
         -o merge_request.target=main
-        -o merge_request.auto_merge
         -o merge_request.description="Fumaça aprovada em dev. Evidência no job ${CI_JOB_URL}"
+    # O repositório usa merge por avanço rápido, e main avança a cada promoção
+    # para dev: o merge request nasce atrás de main e o GitLab não faz o rebase
+    # sozinho. O job pede o rebase pela API e só depois liga o merge automático.
+    - |
+      API="https://git.sefaz.interno/api/v4/projects/plataforma%2Fmanifestos-apps"
+      CAB="PRIVATE-TOKEN: ${TOKEN_MANIFESTOS}"
+      IID="$(curl -sf --header "${CAB}" "${API}/merge_requests?state=opened&source_branch=promove-${APP_NAME}-hml-${CI_COMMIT_SHORT_SHA}" | jq -r '.[0].iid')"
+      curl -sf --request PUT --header "${CAB}" "${API}/merge_requests/${IID}/rebase"
+      # O rebase é assíncrono: espera terminar antes de ligar o merge.
+      for _ in $(seq 1 30); do
+        [ "$(curl -sf --header "${CAB}" "${API}/merge_requests/${IID}?include_rebase_in_progress=true" | jq -r '.rebase_in_progress')" = "false" ] && break
+        sleep 2
+      done
+      curl -sf --request PUT --header "${CAB}" "${API}/merge_requests/${IID}/merge" --data "auto_merge=true"
 
 # ---------------------------------------------------------------------------
 # Depois da sincronização em hml: o que só faz sentido contra a aplicação

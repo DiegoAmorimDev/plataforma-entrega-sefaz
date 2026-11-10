@@ -41,5 +41,4 @@ configMapGenerator:
     literals:
       - SPRING_DATASOURCE_URL=jdbc:oracle:thin:@//dbfiscal-hml.sefaz.interno:1521/NFE_HML
       - LOGGING_LEVEL_ROOT=INFO
-      - OTEL_TRACES_SAMPLER_ARG=0.1
       - AUTORIZADOR_URL=https://homologacao.autorizador.sefaz.exemplo.gov.br

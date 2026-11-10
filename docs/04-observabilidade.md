@@ -21,7 +21,7 @@ flowchart LR
     NODE["Coletor por nó<br/>DaemonSet"]
     GW["Coletor de entrada<br/>amostragem de cauda"]
     PROM["Prometheus do cluster<br/>regras de alerta, 15 dias"]
-    AM["Alertmanager<br/>membros nos dois sítios"]
+    AM["Alertmanager<br/>um por cluster"]
     THA["Thanos<br/>consulta global"]
     LOKI["Loki"]
     TEMPO["Tempo"]
@@ -67,6 +67,15 @@ no produto. O histórico vai por escrita remota ao Thanos, em `plat-dc1`, para a
 para a retenção longa. Na perda de DC1, `prd-dc2` perde o painel global, mas continua avaliando
 regra e acordando gente.
 
+**Cada cluster tem o próprio Alertmanager, inclusive `prd-dc2`, e cada um envia o próprio sinal de
+vida.** O Prometheus de um cluster notifica o Alertmanager do mesmo cluster, e a vigilância externa
+sabe qual deles parou de falar.
+
+> *Decisão: um Alertmanager por cluster, e não um agrupamento único que atravessa os dois sítios.
+> O agrupamento único exigiria um membro em DC2 fora do inventário e faria a perda de DC1 depender
+> de quórum entre sítios. O custo é o mesmo problema em dois clusters gerar duas notificações, e o
+> silenciamento ser criado em cada Alertmanager.*
+
 > *Decisão: métrica por raspagem no Prometheus do cluster, e não enviada pelo coletor para um
 > armazenamento central. Com o envio central, a regra de alerta precisaria ser avaliada no centro,
 > em `plat-dc1`, e cairia junto com DC1, justamente quando mais importa. O custo é a métrica não
@@ -81,7 +90,10 @@ um balanceador comum veriam pedaços de cada trace e decidiriam errado.
 A configuração do coletor está em
 [`exemplos/observabilidade/otel-collector.yaml`](../exemplos/observabilidade/otel-collector.yaml).
 O processador `k8sattributes` carimba log e trace com namespace, pod, nó e time dono. É o carimbo
-que permite, no Grafana, sair de um trace para o log do mesmo pod e filtrar por time.
+que permite, no Grafana, sair de um trace para o log do mesmo pod e filtrar por time. Como o coletor
+de entrada recebe os dados do coletor do nó, e não do pod, o chart coloca o IP do pod entre os
+atributos de recurso, e a associação usa esse atributo. Sem ele, todo dado sairia carimbado com o
+pod do coletor do nó.
 
 ---
 
@@ -137,6 +149,11 @@ Rastreamento distribuído com amostragem adaptativa no coletor de entrada. A reg
 Amostragem de cauda custa memória no coletor, porque ele segura o trace até completá-lo. Em troca,
 evita o problema clássico da amostragem de cabeça: descartar justamente o trace que deu errado.
 
+> *Decisão: o agente Java envia todo trace (`parentbased_always_on`) e só o coletor decide o que
+> guardar. A alternativa, uma taxa de 1 por cento no agente, descartaria 99 por cento dos traces
+> antes de o coletor saber se algum deu erro, e a promessa de cem por cento dos traces com erro
+> deixaria de valer. O custo é todo trace sair do pod, e o coletor de entrada absorver esse volume.*
+
 A correlação entre os três sinais é o que faz a investigação ser rápida. O painel do Grafana mostra
 o pico de latência, o clique leva ao trace exemplar daquele ponto, e o trace leva aos logs daquele
 identificador. Três cliques entre "está lento" e "a consulta ao Oracle está lenta".
@@ -168,9 +185,21 @@ quanto a degradação lenta:
 | 1 vez | 3 dias e 6 horas | 30 dias | Painel |
 
 A janela curta junto com a longa é o que evita dois defeitos. Só a janela longa demora a detectar
-uma queda total. Só a curta dispara com qualquer soluço de trinta segundos. Exigir as duas ao mesmo
-tempo dá detecção rápida sem ruído. A regra completa está em
+uma degradação súbita. Só a curta dispara com qualquer soluço de trinta segundos. Exigir as duas ao
+mesmo tempo dá detecção rápida sem ruído. A regra completa está em
 [`exemplos/observabilidade/prometheus-rules.yaml`](../exemplos/observabilidade/prometheus-rules.yaml).
+
+**O orçamento de erro cobre degradação, não queda total.** Com a aplicação fora do ar, não há
+requisição, a taxa de erro é zero dividido por zero, e as regras de consumo não disparam. A regra
+de métrica ausente acabaria detectando, mas só depois de cerca de 20 minutos, mais que o tempo
+máximo de retomada do nível 1. Por isso o nível 1 tem um alerta direto de indisponibilidade:
+nenhuma réplica pronta, ou 100 por cento de resposta 5xx no roteador, por dois minutos, com
+severidade crítica.
+
+> *Decisão: alerta direto de queda total para o nível 1, ao lado do orçamento de erro. A
+> alternativa, confiar só na métrica ausente, detecta em 20 minutos. O custo é aceitar que esse
+> alerta não tem o filtro das duas janelas: uma queda de dois minutos liga o telefone. Para o nível
+> 1, é o preço certo, e por isso o alerta não existe nos demais níveis.*
 
 ### Regra 2: alerta sobre sintoma, não sobre causa
 
@@ -213,8 +242,13 @@ quando escalar. Dois parágrafos bastam. Roteiro de resposta ausente é impedime
 Um nó que cai gera, sem tratamento, quarenta pods não prontos, quarenta alertas de disponibilidade
 e várias chamadas telefônicas sobre o mesmo evento. O Alertmanager agrupa por cluster, pelo rótulo
 externo que cada Prometheus acrescenta, e por namespace,
-e tem regra de inibição: enquanto houver alerta de nó indisponível, os alertas de pod naquele nó
-ficam suprimidos.
+e tem duas regras de inibição. Enquanto houver alerta de nó indisponível, os alertas de pod não
+pronto do mesmo cluster ficam suprimidos, porque o alerta de pod não carrega o nó. O custo é um pod
+doente em outro nó do mesmo cluster ficar mudo durante a queda do primeiro, e quem cobre esse caso
+é o orçamento de erro da aplicação, que não é inibido. A segunda regra faz o aviso de queima lenta
+calar enquanto a queima rápida ou média da mesma aplicação está ativa. Não há inibição por cluster
+indisponível nem por manutenção programada: cluster fora do ar é o caso do sinal de vida que para,
+e manutenção é silenciamento com prazo.
 
 O silenciamento é possível, sempre com prazo máximo de 24 horas e justificativa obrigatória.
 Silêncio sem prazo é como o ruído volta.
@@ -241,7 +275,7 @@ Três painéis, nessa ordem.
 livre, certificados vencendo em menos de trinta dias, estado de sincronização do Argo CD, fila de
 build.
 
-**Painel por aplicação**, gerado automaticamente para cada entrada do catálogo: as quatro métricas
+**Painel por aplicação**, gerado automaticamente para cada entrada do catálogo: as métricas
 de ouro, orçamento de erro restante no mês, versão em execução em cada ambiente, últimas cinco
 implantações marcadas sobre o gráfico. A marcação da implantação sobre o gráfico de latência é a
 peça que mais acelera diagnóstico, porque responde de imediato se a degradação começou com a

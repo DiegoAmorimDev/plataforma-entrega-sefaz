@@ -186,6 +186,11 @@ A plataforma resolve com quatro regras combinadas.
 **Primeira: a imagem é construída uma vez.** O estágio de build roda apenas quando um commit entra
 em `main`. Nenhum estágio posterior tem `docker build`. A promoção entre ambientes nunca reconstrói.
 
+O construtor é o Kaniko, que dispensa daemon e contêiner privilegiado. O repositório original foi
+arquivado pelo Google em 2025, e o exemplo usa a bifurcação mantida pela Chainguard, espelhada no
+Harbor. O risco é a bifurcação também parar de receber correção. A saída é o Buildah ou o BuildKit
+sem privilégio, e só o arquivo `imagem.yml` do template central muda.
+
 **Segunda: a referência é o digest, não a tag (ADR-007).** O manifesto de qualquer ambiente aponta para
 `harbor.sefaz.interno/time/app@sha256:9f2c...`, e não para `app:1.4.2`. O digest é o hash do
 conteúdo do manifesto da imagem. Duas imagens com o mesmo digest são a mesma imagem; não há como
@@ -208,6 +213,13 @@ Conjur pela identidade do job, assina em memória e a descarta. A política do K
 assinatura Cosign contra a chave pública correspondente antes de admitir o pod. Imagem construída fora da esteira,
 ou publicada por alguém com acesso ao registry, não executa. A política está em
 [`exemplos/politicas/exigir-imagem-assinada.yaml`](../exemplos/politicas/exigir-imagem-assinada.yaml).
+
+Em homologação e produção, uma regra à parte recusa o pod cuja imagem esteja referenciada por tag.
+Ela só recusa de fato porque a verificação de assinatura não reescreve a tag em digest
+(`mutateDigest: false`); com a reescrita ligada, a regra passaria para toda imagem assinada. O custo
+é nenhuma imagem poder usar tag, nem as das ferramentas que o chart executa: o Liquibase da migração
+e o teste de fumaça também são referenciados por digest. Para ler a assinatura no Harbor privado, o
+Kyverno usa uma credencial de leitura própria (`imageRegistryCredentials`).
 
 Junto com a imagem, o pipeline publica a lista de componentes do artefato, gerada pelo Syft. Quando
 a próxima vulnerabilidade de ampla divulgação aparecer, a pergunta "quais das nossas 60 aplicações

@@ -29,8 +29,13 @@ dependencia-vulneravel:
   extends: .runner-comum
   stage: seguranca
   image: ${REGISTRY}/proxy/aquasec/trivy:0.56.2
+  variables:
+    # Rede fechada: o banco de vulnerabilidades vem do espelho no Harbor, e a
+    # plataforma o atualiza todo dia. Sem espelho, o Trivy falha sempre.
+    TRIVY_DB_REPOSITORY: ${REGISTRY}/proxy/aquasecurity/trivy-db
+    TRIVY_JAVA_DB_REPOSITORY: ${REGISTRY}/proxy/aquasecurity/trivy-java-db
   script:
-    - trivy fs --scanners vuln
+    - trivy fs --skip-db-update --skip-java-db-update --scanners vuln
         --severity CRITICAL
         --ignore-unfixed
         --exit-code 1
@@ -49,8 +54,11 @@ dependencia-sem-correcao:
   extends: .runner-comum
   stage: seguranca
   image: ${REGISTRY}/proxy/aquasec/trivy:0.56.2
+  variables:
+    TRIVY_DB_REPOSITORY: ${REGISTRY}/proxy/aquasecurity/trivy-db
+    TRIVY_JAVA_DB_REPOSITORY: ${REGISTRY}/proxy/aquasecurity/trivy-java-db
   script:
-    - trivy fs --scanners vuln --severity CRITICAL,HIGH --format json -o sem-correcao.json .
+    - trivy fs --skip-db-update --skip-java-db-update --scanners vuln --severity CRITICAL,HIGH --format json -o sem-correcao.json .
     - /scripts/abrir-issue-acompanhamento.sh sem-correcao.json
   allow_failure: true
   artifacts:
@@ -65,7 +73,9 @@ analise-estatica:
   stage: seguranca
   image: ${REGISTRY}/proxy/semgrep/semgrep:1.90.0
   script:
-    - semgrep ci --config p/owasp-top-ten --severity ERROR
+    # Regras empacotadas na imagem da plataforma (/regras/owasp.yml), atualizadas
+    # por ela. O semgrep ci pede conta e consulta a internet; o scan local não.
+    - semgrep scan --config /regras/owasp.yml --severity ERROR --error --metrics=off
   allow_failure: false
 
 # ---------------------------------------------------------------------------

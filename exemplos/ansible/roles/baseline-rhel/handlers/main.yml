@@ -14,7 +14,10 @@
 # recarregado sem validação, deixa a máquina inacessível por SSH.
 - name: validar e recarregar sshd
   ansible.builtin.command: sshd -t
-  changed_when: false
+  # Handler só avisa outro handler quando termina como "changed". O sshd -t
+  # falho já aborta a execução antes do recarregamento, então marcar como
+  # alterado aqui não esconde erro.
+  changed_when: true
   notify: recarregar sshd
 
 - name: recarregar sshd

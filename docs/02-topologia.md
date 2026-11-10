@@ -18,20 +18,38 @@ Em plataforma que hospeda dado fiscal, esses quatro casos importam mais que a ec
 | `prd-dc2` | DC2 | OpenShift | Produção, sítio secundário | 3 | 9 |
 
 Nó de controle tem 8 vCPU e 32 GB; nó de trabalho, 16 vCPU e 64 GB. Homologação tem um terço dos
-nós de trabalho de `prd-dc1`, com a mesma configuração por nó. `prd-dc2` tem 70 por cento da
-capacidade de `prd-dc1`, o que cobre o nível 1 e o nível 2 com as aplicações suspensíveis
-desligadas ([`docs/05`](05-resiliencia.md)).
+nós de trabalho de `prd-dc1`, com a mesma configuração por nó. `prd-dc2` tem 75 por cento (9 de 12
+nós de trabalho) da capacidade de `prd-dc1`, o que cobre o nível 1 e o nível 2 com as aplicações
+suspensíveis desligadas ([`docs/05`](05-resiliencia.md)).
+
+**De onde vêm os 12 nós de `prd-dc1`.** A premissa é uma requisição média de 0,5 vCPU e 2 GB por
+réplica, com três réplicas em média por aplicação: 60 aplicações dão cerca de 180 réplicas, ou 90
+vCPU e 360 GB. Um nó de 16 vCPU e 64 GB oferece cerca de 12 vCPU e 48 GB aproveitáveis depois da
+reserva do sistema. A margem é perder um rack, que é um terço dos nós: os dois terços restantes
+precisam carregar tudo. Com 12 nós, os 8 que sobram oferecem 96 vCPU e 384 GB, e a conta fecha. Com
+11, a memória não fecha. O consumo medido na fase 0 troca a premissa por número.
 
 Os números são ponto de partida, a ser revisto com o inventário de consumo real das 60 aplicações,
-levantado na fase de descoberta. O que não é negociável é o três em nó de controle: abaixo disso o
+levantado na fase de descoberta. Somados os cinco clusters, são cerca de 50 máquinas virtuais novas,
+15 nós de controle e 35 de trabalho, com cerca de 680 vCPU e 2,7 TB de memória, premissa de
+capacidade do vSphere existente que está na tabela do README. O que não é negociável é o três em nó de controle: abaixo disso o
 etcd perde quórum com uma única falha.
 
-Fora da tabela, em máquina virtual, ficam três grupos de peças:
+Fora da tabela, em máquina virtual ou em equipamento, ficam estas peças:
 
 - **Os bancos e o Conjur.** O cofre tem líder e réplica de espera em DC1, réplica de espera e
   réplica de leitura em DC2. Ele não roda em nenhum dos cinco clusters porque é necessário para
-  reconstruir qualquer um deles.
-- **Os pares de HAProxy**, um por sítio.
+  reconstruir qualquer um deles. O etcd do Patroni são três máquinas pequenas em DC1, mais uma de
+  DC2 desligada, que entra no roteiro de promoção ([`docs/05`](05-resiliencia.md)). O banco de
+  homologação fica numa máquina virtual na zona de banco de DC1, na VLAN de homologação.
+- **Os pares de HAProxy**, um por sítio. Firewall e WAF são equipamento da equipe de rede, na
+  entrada de cada sítio, antes do par de HAProxy. O Apache e o legado existem nos dois sítios, com
+  o Apache de DC2 como reserva, como mostra [`exemplos/borda/haproxy.cfg`](../exemplos/borda/haproxy.cfg).
+- **O Rancher**, em três máquinas virtuais próprias em DC1, num RKE2 de gestão que não hospeda
+  aplicação e por isso não conta entre os cinco clusters. A alternativa descartada é instalá-lo no
+  `plat-dc1`, que é OpenShift e não é plataforma suportada pelo Rancher. O custo é manter três
+  máquinas a mais para atualizar.
+- **O Keycloak**, que roda no `plat-dc1`, com uma instância em máquina virtual em DC2.
 - **As réplicas de plataforma em DC2**: o GitLab secundário, a réplica do Harbor e o MinIO
   espelhado. DC2 não tem cluster de plataforma; essas três peças rodam em máquinas virtuais
   dedicadas, instaladas pelos instaladores oficiais de cada produto para máquina virtual. O Argo

@@ -13,6 +13,9 @@ metadata:
 data:
   # Helm dentro do Kustomize: cada overlay infla o chart app-base com o
   # values.yaml da base. O load-restrictor permite ao overlay ler ../../base.
+  # Efeito colateral: qualquer overlay passa a poder ler arquivo do servidor de
+  # repositório. O job validar do manifestos-apps reprova gerador de ConfigMap ou
+  # Secret com caminho fora de base/ (gitops/.gitlab-ci.yml).
   kustomize.buildOptions: --enable-helm --load-restrictor LoadRestrictionsNone
 
   # Login pelo Keycloak, com os grupos do diretório corporativo.
@@ -30,6 +33,17 @@ data:
 
   # Anotação usada para saber quais objetos pertencem a cada Application.
   application.resourceTrackingMethod: annotation
+---
+# Sem esta opção o Argo CD ignora o applicationsSync: create-update do
+# ApplicationSet, e o diretório apagado por engano apagaria a Application.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmd-params-cm
+  namespace: argocd
+  labels: { app.kubernetes.io/part-of: argocd }
+data:
+  applicationsetcontroller.enable.policy.override: "true"
 ---
 apiVersion: v1
 kind: ConfigMap

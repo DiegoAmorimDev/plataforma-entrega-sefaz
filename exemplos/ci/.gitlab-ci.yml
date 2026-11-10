@@ -28,9 +28,13 @@ variables:
 # A emissão de nota fiscal tem um teste de contrato contra o autorizador da SEFAZ
 # que não existe nas demais aplicações.
 
+# BLOQUEIA: o construir-imagem lista este job em needs como opcional, então a
+# imagem só sai se o contrato com o autorizador passar.
 teste-contrato-autorizador:
   extends: .job-teste-base
   stage: teste
+  needs: [compilar]
+  allow_failure: false
   script:
     - mvn -B verify -Pcontrato-autorizador
   rules:

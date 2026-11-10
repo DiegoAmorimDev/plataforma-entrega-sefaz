@@ -56,7 +56,9 @@ plataforma dimensionada por chute.
   mais duas até a fase 2. Plantão contínuo com quatro pessoas é uma semana de plantão a cada
   quatro, durante doze meses de construção; com seis, a escala fecha sem esgotar ninguém.
 - Levantamento do custo de software e abertura das contratações que demoram (ver "Custo e
-  contratação", abaixo).
+  contratação", abaixo). As compras da fase 1, o Conjur e o PAM, o GitLab Premium e o que mais a
+  fase 1 exigir além da subscrição OpenShift, abrem no dia 1 da fase 0, porque a compra pública
+  leva de três a seis meses e a fase 1 começa no dia 46.
 - Definição do que não entra na plataforma nesses doze meses, por escrito.
 
 **Entregável:** inventário publicado, classificação acordada, linha de base registrada, lista das
@@ -73,10 +75,11 @@ tolera erro de aprendizado, nem a mais irrelevante, cujo sucesso não convence n
 **O que se faz:**
 
 - Terraform e Ansible para as máquinas da plataforma, com o papel de linha de base validado.
-- Clusters `plat-dc1` e `dev-dc1` em operação.
+- Clusters `plat-dc1` e `dev-dc1` em operação, e o Rancher em três máquinas virtuais próprias, num
+  RKE2 de gestão, porque o provedor Terraform dele precisa existir antes do `dev-dc1`.
 - Harbor, Keycloak e runners próprios.
 - Conjur integrado ao PAM, com a primeira política de rotação em conta dupla e o External Secrets
-  autenticando por ServiceAccount em `dev-dc1`.
+  autenticando por ServiceAccount em `dev-dc1`. Se a compra atrasar, o OpenBao faz a ponte (risco 2).
 - Esteira completa para as três aplicações piloto: build, teste, SonarQube, varredura, assinatura,
   publicação.
 - Argo CD gerenciando `dev-dc1`, com o repositório de manifestos e o gerador de aplicações.
@@ -126,15 +129,24 @@ regra de rota. Por isso a primeira onda tem só aplicações de nível 2 e 3, e 
 
 - Cluster `prd-dc2` e replicação do Harbor entre sítios.
 - GitLab secundário em DC2.
-- Thanos com retenção longa no MinIO.
-- Réplica do Oracle por Data Guard e do PostgreSQL por Patroni para DC2, com troca de papel
-  testada.
+- Contingência do Argo CD instalada e desligada em `prd-dc2`.
+- Réplicas do Conjur em DC2, a de espera e a de leitura.
+- Réplica do diretório e instância do Keycloak em DC2.
+- MinIO espelhado e Thanos com retenção longa.
+- Contrato da vigilância externa, com um sinal de vida por cluster.
+- Réplica do Oracle por Data Guard e do PostgreSQL por Patroni para DC2, com a máquina do etcd
+  de reserva e a troca de papel testada.
 - Primeiro exercício de continuidade, com DC1 isolado de propósito.
 - Argo Rollouts com canário para as aplicações de nível 1.
-- Segunda e terceira ondas de migração: mais 25 aplicações.
+- Segunda onda de migração: mais 20 aplicações, o dobro das 10 da fase 2. O ritmo sobe porque os
+  templates e o chart base já foram exercitados na primeira onda. Somadas às 10 da fase 2, são 30
+  no fim da fase 3, e as de 10 a 15 da fase 4 fecham a expectativa de 40 a 45.
 
 **Entregável:** exercício de continuidade executado com tempo cronometrado, relatório de achados e
-correções aplicadas. Cerca de 35 aplicações na plataforma.
+correções aplicadas. Cerca de 30 aplicações na plataforma.
+
+A fase 3 carrega o segundo sítio inteiro além da migração. Se a equipe não chegar a seis pessoas, a
+meta de 20 cai antes de qualquer item da lista de continuidade (README, premissa da equipe).
 
 **Por que aqui:** o canário entra agora porque exige linha de base histórica de métrica para
 comparar. Nas fases anteriores não havia série temporal suficiente para a análise automática
@@ -146,7 +158,7 @@ decidir alguma coisa.
 
 **O que se faz:**
 
-- Ondas finais de migração, incluindo as aplicações que exigem ajuste de estado.
+- Ondas finais de migração, de 10 a 15 aplicações, incluindo as que exigem ajuste de estado.
 - Rateio de custo por namespace, com relatório de consumo por time.
 - Exercícios de injeção de falha em homologação, de forma controlada.
 - Avaliação do portal interno de desenvolvedor, decidida por dado de uso, não por vontade.
@@ -168,16 +180,37 @@ atraso visível no mês 10; prometer 45 e entregar 50 produz confiança.
 
 Em ordem de probabilidade multiplicada por impacto.
 
-### Risco 1: a equipe de plataforma vira central de chamados
+### Risco 1: a equipe de plataforma vira gargalo
 
-A forma mais comum de o projeto fracassar sem ninguém perceber. Quatro pessoas atendendo doze times
-manualmente não sobra tempo para construir, e a plataforma congela no estado da fase 1.
+É o ponto de falha mais provável dos doze meses e a forma mais comum de o projeto fracassar sem
+ninguém perceber. Tem duas faces. Quatro pessoas atendendo doze times manualmente não sobra tempo
+para construir, e a plataforma congela no estado da fase 1. E equipe pequena com especialista único
+por área perde a única pessoa que sabe restaurar o cofre ou o banco.
 
 **Mitigação:** o autoatendimento é entregável da fase 1, não da fase 4. A terceira ocorrência do
 mesmo chamado vira item da fila de trabalho. O percentual de tempo da equipe gasto em chamado é medido, e
-acima de 40 por cento a migração é pausada até cair.
+acima de 40 por cento a migração é pausada até cair. Dupla por área desde a fase 0, roteiro de
+resposta escrito por quem não fez a instalação, rodízio de plantão e exercício de continuidade
+executado por quem não o planejou.
 
-### Risco 2: resistência dos times
+### Risco 2: contratação mais lenta que o cronograma
+
+Conjur e PAM, edição Premium do GitLab, eventual opção de TDE do Oracle e o hardware de DC2 passam
+por processo de compra pública, de três a seis meses cada. A subscrição de OpenShift é premissa do
+README e não entra nesta conta. Uma contratação atrasada segura a fase inteira que depende dela, e
+a fase 1 depende do Conjur.
+
+**Mitigação:** as compras da fase 1 abrem no dia 1 da fase 0, e as da fase 3 ainda na fase 1. Cada
+componente pago tem alternativa aberta declarada (OpenBao para o Conjur, Quay ou Harbor para o
+registry, SonarQube Community para a edição Developer), para que um atraso troque a ferramenta, e
+não pare o plano.
+
+**Desvio aceito:** se o Conjur atrasar, a fase 1 sobe com o OpenBao como ponte. A troca depois é só
+do SecretStore, porque o consumo pelo External Secrets não muda (ADR-008). O custo é rotação por
+credencial dinâmica de banco durante a ponte, em vez da rotação pelo PAM, e uma segunda migração de
+caminho de segredos para a equipe, que cabe numa janela de mudança.
+
+### Risco 3: resistência dos times
 
 Doze times com processo próprio que funciona não adotam plataforma nova por determinação
 administrativa. Adotam por baixo, com formalidade.
@@ -185,18 +218,20 @@ administrativa. Adotam por baixo, com formalidade.
 **Mitigação:** piloto com time voluntário; resultado medido e divulgado com o número de antes e
 depois; adoção por convite nas duas primeiras ondas. A obrigatoriedade só entra depois que houver
 prova, e com prazo longo. Um time que vê outro entregando em vinte minutos o que ele leva dois dias
-pede para entrar.
+pede para entrar. O número "vinte minutos contra dois dias" é hipótese a validar na linha de base
+da fase 0, e não medição.
 
-### Risco 3: capacidade de hardware subdimensionada
+### Risco 4: capacidade de hardware subdimensionada
 
 On-premises não tem elasticidade. Descobrir no mês 8 que faltam nós significa processo de compra de
-três a seis meses num órgão público.
+três a seis meses num órgão público. A premissa de que o vSphere existente comporta cerca de 50
+máquinas virtuais novas está no README; se ela cair, a compra de hospedeiros entra na fase 0.
 
 **Mitigação:** dimensionamento com o consumo real medido na fase 0, mais 40 por cento de margem.
 O processo de aquisição do hardware da fase 3 é iniciado na fase 1. Alerta de capacidade com
 previsão de 90 dias, e não de percentual atual.
 
-### Risco 4: dado fiscal em ambiente com permissão mais larga
+### Risco 5: dado fiscal em ambiente com permissão mais larga
 
 Cópia de produção para homologação sem anonimização é o incidente de privacidade mais provável do
 projeto, e o mais caro em órgão fiscalizado.
@@ -205,7 +240,7 @@ projeto, e o mais caro em órgão fiscalizado.
 Negação por padrão na rede desde o primeiro namespace. Auditoria de acesso ao servidor de API
 retida por cinco anos. Revisão da área de segurança da informação antes da primeira carga.
 
-### Risco 5: migração que trava no meio
+### Risco 6: migração que trava no meio
 
 Uma aplicação que não migra, por dependência inesperada, costuma travar a onda inteira e consumir
 semanas.
@@ -214,7 +249,7 @@ semanas.
 semanas volta para a fila com o impedimento registrado, e a onda segue. O HAProxy mantendo a rota
 no legado torna essa desistência barata e reversível.
 
-### Risco 6: defasagem de conhecimento
+### Risco 7: defasagem de conhecimento
 
 Kubernetes, GitOps e observabilidade moderna são novidade para boa parte dos doze times. Plataforma
 que exige conhecimento que ninguém tem é plataforma não usada.
@@ -223,7 +258,7 @@ que exige conhecimento que ninguém tem é plataforma não usada.
 capacitação com quatro oficinas práticas por trimestre. Programação em par da plataforma com o time
 durante a migração de cada aplicação. Documentação escrita para quem está chegando.
 
-### Risco 7: segredo em texto aberto no acervo existente
+### Risco 8: segredo em texto aberto no acervo existente
 
 Credencial dentro de pipeline antigo, de arquivo de configuração e de repositório é quase certa num
 parque de 60 aplicações. Migrar sem tratar leva o problema junto.
@@ -231,24 +266,6 @@ parque de 60 aplicações. Migrar sem tratar leva o problema junto.
 **Mitigação:** varredura de histórico do Git logo na fase 1, com relatório por time. Conjur e
 External Secrets disponíveis antes da primeira migração. Rotação obrigatória de toda credencial
 encontrada, porque o que esteve em repositório é considerado comprometido.
-
-### Risco 8: concentração de conhecimento em uma pessoa
-
-Equipe pequena com especialista único por área é o ponto de falha mais provável dos doze meses.
-
-**Mitigação:** dupla por área desde a fase 0. Roteiro de resposta escrito por quem não fez a instalação.
-Rodízio de plantão. O exercício de continuidade é executado por quem não o planejou.
-
-### Risco 9: contratação mais lenta que o cronograma
-
-Subscrição de OpenShift, licença do Conjur e do PAM, edição Premium do GitLab, eventual opção de TDE do Oracle e o hardware
-de DC2 passam por processo de compra pública, de três a seis meses cada. Uma contratação atrasada
-segura a fase inteira que depende dela.
-
-**Mitigação:** levantamento de custo na fase 0 e abertura das contratações da fase 3 ainda na fase
-1. Cada componente pago tem alternativa aberta declarada (OpenBao para o Conjur, Quay ou Harbor
-para o registry, SonarQube Community para a edição Developer), para que um atraso troque a
-ferramenta, e não pare o plano.
 
 ---
 
@@ -265,7 +282,10 @@ custa, e dizer do que cada custo depende.
 | TDE do Oracle | Opção licenciada à parte, por núcleo do banco | Quantos bancos guardam dado fiscal | Cifra do datastore, com o limite declarado em `docs/01` |
 | SonarQube Developer | Por linhas de código analisadas | Tamanho das 60 aplicações | SonarQube Community, já adotado (ADR-012) |
 | GitLab Premium | Por usuário | O GitLab secundário em DC2 usa o Geo, que é da edição Premium | Restauração do backup do GitLab em DC2, com retomada em horas e não em minutos |
-| Hardware de DC2 | Compra de capital | 70 por cento da capacidade de `prd-dc1` | Continuidade por restauração de backup |
+| Hardware de DC2 | Compra de capital | 75 por cento da capacidade de `prd-dc1` (9 de 12 nós de trabalho) | Continuidade por restauração de backup |
+| Oracle em DC2 | Licença do banco na instância em espera (Data Guard), por núcleo | Quantos bancos de nível 1 e 2 têm espera em DC2 | Restauração do backup em DC2, com retomada em horas. Sem Active Data Guard: a espera não atende consulta |
+| Vigilância externa | Assinatura de serviço hospedado fora dos datacenters | Número de sinais de vida, um por cluster | Verificação própria numa nuvem pública, com a operação a cargo da equipe |
+| SIEM e ferramenta de plantão | Premissas existentes na Secretaria (README) | Nada novo se a premissa for verdadeira | Serviço contratado, se a premissa cair |
 | Harbor, Argo CD, Kyverno, Prometheus, Grafana, Loki, Tempo, Keycloak | Sem licença | Horas da equipe de plataforma | — |
 
 O retorno financeiro aparece na fase 4, com o desligamento das máquinas virtuais das aplicações
@@ -277,7 +297,7 @@ migradas e das licenças de servidor de aplicação que elas usavam.
 
 Quatro números comparados com a linha de base da fase 0, publicados trimestralmente.
 
-| Indicador | Hoje, estimado | Meta no mês 12 |
+| Indicador | Hoje, hipótese a validar na fase 0 | Meta no mês 12 |
 |---|---|---|
 | Tempo entre commit e produção | Semanas | Menos de 1 dia para nível 2 e 3 |
 | Frequência de entrega por aplicação | Mensal | Semanal |

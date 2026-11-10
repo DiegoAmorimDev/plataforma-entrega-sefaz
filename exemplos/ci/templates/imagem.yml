@@ -8,8 +8,8 @@
 #
 # O repositório original do Kaniko foi arquivado pelo Google em 2025, e as imagens
 # em gcr.io não recebem mais correção de segurança. A plataforma usa a bifurcação
-# mantido pela Chainguard, espelhado no Harbor com o utilitário conjur-segredo.
-# Se a bifurcação deixar de ser mantido, a troca é pelo Buildah sem privilégio, e só
+# mantida pela Chainguard, espelhado no Harbor com o utilitário conjur-segredo.
+# Se a bifurcação deixar de ser mantida, a troca é pelo Buildah sem privilégio, e só
 # este arquivo muda.
 
 construir-imagem:
@@ -18,7 +18,17 @@ construir-imagem:
   image:
     name: ${REGISTRY}/plataforma/kaniko:v1.25-chainguard
     entrypoint: [""]
-  needs: [compilar, sonarqube]   # sem quality gate aprovado, não há imagem
+  # Com needs, o GitLab ignora a ordem dos estágios. Por isso os três jobs de
+  # segurança que BLOQUEIAM entram aqui, junto com o portão de qualidade: sem
+  # eles verdes, não há imagem.
+  needs:
+    - compilar
+    - sonarqube
+    - segredo-no-codigo
+    - dependencia-vulneravel
+    - analise-estatica
+    # Job opcional do time (teste de contrato, por exemplo): se existir, bloqueia.
+    - { job: teste-contrato-autorizador, optional: true }
   rules:
     - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   script:
@@ -56,7 +66,7 @@ construir-imagem:
 # mantém a base.
 # ---------------------------------------------------------------------------
 varrer-imagem:
-  extends: .runner-comum
+  extends: [.runner-comum, .identidade-conjur]
   stage: imagem
   needs: [construir-imagem]
   # Versão fixada e servida pelo proxy do Harbor: a esteira que exige digest
@@ -65,12 +75,18 @@ varrer-imagem:
   rules:
     - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   script:
-    - trivy image --severity CRITICAL --ignore-unfixed --exit-code 1
+    # O projeto do time no Harbor é privado: o Trivy lê a imagem com a mesma
+    # credencial que o construir-imagem usa para escrever nela. O banco de
+    # vulnerabilidades vem do espelho no Harbor, porque a rede é fechada.
+    - HARBOR_AUTH="$(conjur-segredo "plataforma/esteira/harbor/${APP_TIME}" | base64 -d)"
+    - export TRIVY_USERNAME="${HARBOR_AUTH%%:*}" TRIVY_PASSWORD="${HARBOR_AUTH#*:}"
+    - export TRIVY_DB_REPOSITORY="${REGISTRY}/proxy/aquasecurity/trivy-db" TRIVY_JAVA_DB_REPOSITORY="${REGISTRY}/proxy/aquasecurity/trivy-java-db"
+    - trivy image --skip-db-update --skip-java-db-update --severity CRITICAL --ignore-unfixed --exit-code 1
         --ignorefile .trivyignore-base
         "${IMAGEM}@${IMAGEM_DIGEST}"
 
 gerar-lista-de-componentes:
-  extends: .runner-comum
+  extends: [.runner-comum, .identidade-conjur]
   stage: imagem
   needs: [construir-imagem]
   image: ${REGISTRY}/proxy/anchore/syft:v1.14.0
@@ -80,6 +96,8 @@ gerar-lista-de-componentes:
     # A lista de componentes é o que responde "quais das 60 aplicações usam esta
     # biblioteca" sem abrir chamado para doze times. Ela é anexada à imagem
     # como atestação assinada no job seguinte, que tem a chave.
+    - HARBOR_AUTH="$(conjur-segredo "plataforma/esteira/harbor/${APP_TIME}" | base64 -d)"
+    - export SYFT_REGISTRY_AUTH_AUTHORITY="${REGISTRY}" SYFT_REGISTRY_AUTH_USERNAME="${HARBOR_AUTH%%:*}" SYFT_REGISTRY_AUTH_PASSWORD="${HARBOR_AUTH#*:}"
     - syft "${IMAGEM}@${IMAGEM_DIGEST}" -o cyclonedx-json > sbom.json
   artifacts:
     paths: [sbom.json]
@@ -111,10 +129,20 @@ assinar-imagem:
     - echo "{\"auths\":{\"${REGISTRY}\":{\"auth\":\"${HARBOR_AUTH}\"}}}" > ~/.docker/config.json
     - export COSIGN_PASSWORD="$(conjur-segredo plataforma/esteira/cosign-senha)"
     - conjur-segredo plataforma/esteira/cosign-chave > /dev/shm/cosign.key
-    - cosign sign --yes --tlog-upload=false --key /dev/shm/cosign.key "${IMAGEM}@${IMAGEM_DIGEST}"
+    #
+    # Cosign 3 assina por padrão no formato novo de pacote e com configuração de
+    # assinatura, que conflita com --tlog-upload=false e que as versões do Kyverno
+    # que só leem o formato antigo (.sig) não verificam. As duas opções abaixo
+    # voltam ao comportamento anterior. Confirmar no laboratório; se a combinação
+    # falhar, a saída é fixar o cosign v2.4.
+    - cosign sign --yes --tlog-upload=false --new-bundle-format=false --use-signing-config=false
+        --key /dev/shm/cosign.key "${IMAGEM}@${IMAGEM_DIGEST}"
     # A lista de componentes vira atestação assinada pela mesma chave.
-    - cosign attest --yes --tlog-upload=false --key /dev/shm/cosign.key --type cyclonedx
+    - cosign attest --yes --tlog-upload=false --new-bundle-format=false --use-signing-config=false
+        --key /dev/shm/cosign.key --type cyclonedx
         --predicate sbom.json "${IMAGEM}@${IMAGEM_DIGEST}"
-    - rm -f /dev/shm/cosign.key ~/.docker/config.json
     # A verificação usa a chave pública, a mesma que o Kyverno usa na admissão.
+    # Roda antes de apagar a credencial: ler a assinatura no Harbor privado
+    # exige o mesmo acesso da escrita.
     - cosign verify --insecure-ignore-tlog=true --key /chaves/cosign-plataforma.pub "${IMAGEM}@${IMAGEM_DIGEST}"
+    - rm -f /dev/shm/cosign.key ~/.docker/config.json

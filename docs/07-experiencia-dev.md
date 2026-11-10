@@ -14,7 +14,7 @@ custa mais, porque o time passa a responder pelo que escolheu trocar.
 
 ### Dia 1, pela manhã: o pedido
 
-O time abre um merge request no repositório `catalogo-apps` com uma ficha de cerca de sessenta
+O time abre um merge request no repositório `catalogo-apps` com uma ficha de cerca de cinquenta
 linhas. A ficha é a única coisa que o time preenche para existir na plataforma. O exemplo comentado
 está em [`exemplos/catalogo/exemplo-aplicacao.yaml`](../exemplos/catalogo/exemplo-aplicacao.yaml);
 o trecho abaixo mostra as partes que mais pesam.
@@ -58,15 +58,20 @@ Com o merge, um pipeline executa e cria tudo o que a aplicação precisa:
 | Criado | Onde |
 |---|---|
 | Repositório a partir do template da linguagem | GitLab |
-| Namespaces nos três ambientes, com cota, limites, negação de rede e permissão | Quatro clusters |
+| Namespaces nos três ambientes, com cota, limites, negação de rede e permissão. O pipeline do catálogo faz commit dos objetos em `plataforma-addons/namespaces/`; o Argo CD os lê sob o projeto `plataforma`, que tem permissão de escopo de cluster. O pipeline continua sem credencial de cluster | Quatro clusters |
 | Projeto com política de retenção e varredura | Harbor |
 | Caminho de segredos, identidade da ServiceAccount e política de acesso | Conjur |
 | Diretório de manifestos com os três overlays | `manifestos-apps` |
 | Objeto de aplicação gerado pelo gerador | Argo CD |
-| Painel com as quatro métricas de ouro | Grafana |
+| Painel com as métricas de ouro | Grafana |
 | Alertas de orçamento de erro conforme o nível declarado | Prometheus |
 | Grupo de roteamento de plantão | Alertmanager |
 | Rota em homologação | Roteador do OpenShift |
+
+> *Decisão: o pipeline do catálogo não aplica nada em produção, só faz commit. A alternativa
+> descartada é dar a ele credencial de cluster para criar o namespace direto, que quebra a regra de
+> que o GitLab nunca a recebe. O custo é a aplicação nova esperar a sincronização do Argo CD, de
+> poucos minutos, antes de existir em `prd-dc1` e `prd-dc2`.*
 
 O repositório gerado já vem pronto para o primeiro `git push`. No template Java, isso significa:
 

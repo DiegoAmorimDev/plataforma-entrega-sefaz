@@ -49,11 +49,20 @@ rota:
 canario:
   habilitado: false
 
+# Com enabled: true, templates/hpa.yaml cria o HorizontalPodAutoscaler e o
+# Deployment deixa de fixar replicas. replicaCount vale só com enabled: false.
 autoscaling:
   enabled: false
   minReplicas: 3
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
+
+# Imagens das ferramentas que o chart executa como ganchos, por digest, como
+# a imagem da aplicação. A plataforma atualiza os dois valores quando publica
+# versão nova da ferramenta; a mudança entra por merge request neste chart.
+imagensPlataforma:
+  liquibase: harbor.sefaz.interno/plataforma/liquibase@sha256:5d3a8f0c91e47b62a1d6c0b9e8f2347a56c1d0e9b83f4a7261c5d0e8b9a3f714   # 4.29
+  fumaca:    harbor.sefaz.interno/plataforma/teste-fumaca@sha256:c7e12b94f0a35d86e1b7c4a920d3f58e61a0b7c3d9e4f2815a6b0c7d3e9f1a42   # v3
 
 # Orçamento de interrupção. Impede que a drenagem de dois nós em sequência
 # durante manutenção derrube a aplicação inteira.
@@ -83,12 +92,7 @@ segredos: []
 # aos pods em, no máximo, este intervalo mais o reinício gradual do Reloader.
 segredosIntervalo: 5m
 
-observabilidade:
-  tracesSampleRate: 0.01
-
-# Dependências declaradas viram NetworkPolicy de saída. Sem declarar, o pod não
-# alcança nada além do DNS e do coletor de telemetria.
-dependencias:
-  bancos: []
-  servicos: []
-  externos: []
+# Amostragem de trace: o pod envia todos (parentbased_always_on) e o coletor
+# decide quais guardar. A taxa vive só em observabilidade/otel-collector.yaml.
+# NetworkPolicy não vem deste chart: nasce do catálogo, com as dependências
+# declaradas em exemplos/catalogo/exemplo-aplicacao.yaml.

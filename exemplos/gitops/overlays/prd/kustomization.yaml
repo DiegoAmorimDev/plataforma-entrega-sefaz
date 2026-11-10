@@ -72,7 +72,6 @@ configMapGenerator:
   - name: nfe-emissor-config
     literals:
       - LOGGING_LEVEL_ROOT=INFO
-      - OTEL_TRACES_SAMPLER_ARG=0.01
       - AUTORIZADOR_URL=https://autorizador.sefaz.exemplo.gov.br
       # Os endereços dos dois sítios na mesma URL, e um serviço que só existe
       # na instância principal do Data Guard: depois de uma troca de papel, o

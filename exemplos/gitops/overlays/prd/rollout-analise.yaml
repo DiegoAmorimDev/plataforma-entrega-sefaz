@@ -9,10 +9,17 @@
 #
 # A consulta vai ao Prometheus do PRÓPRIO cluster, que raspa os pods pelo
 # PodMonitor do chart. Assim o canário de prd-dc2 funciona mesmo sem DC1, e a
-# análise de um sítio nunca enxerga o canário do outro. No OpenShift, o endereço
-# é o do monitoramento de cargas do usuário, consultado com o token da conta de
-# serviço do Argo Rollouts. O rótulo sefaz_io_versao vem do rótulo de pod
-# sefaz.io/versao, que o Argo Rollouts aplica (canaryMetadata e stableMetadata).
+# análise de um sítio nunca enxerga o canário do outro. No OpenShift, a consulta
+# vai ao thanos-querier (monitoramento de cargas do usuário incluso), com o token
+# da ServiceAccount do Argo Rollouts, declarada no fim deste arquivo. O rótulo
+# sefaz_io_versao vem do rótulo de pod sefaz.io/versao, que o Argo Rollouts
+# aplica (canaryMetadata e stableMetadata).
+#
+# Custo aceito: o papel cluster-monitoring-view deixa esse token ler todas as
+# métricas do cluster, e não só as do namespace. A alternativa, a porta de
+# tenancy (9092), restringe ao namespace, mas exige o parâmetro namespace em
+# cada consulta, que o provedor do Argo Rollouts não acrescenta. Confirmar no
+# laboratório.
 
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
@@ -21,6 +28,9 @@ metadata:
 spec:
   args:
     - name: namespace
+    - name: token
+      valueFrom:
+        secretKeyRef: { name: rollouts-consulta-token, key: token }
 
   metrics:
     # Reprova se a taxa de erro do canário passar de 1,5 vez a da estável.
@@ -35,7 +45,10 @@ spec:
       successCondition: len(result) > 0 && result[0] <= 1.5
       provider:
         prometheus:
-          address: http://prometheus-cluster.monitoramento:9090
+          address: https://thanos-querier.openshift-monitoring.svc:9091
+          insecure: false     # a CA de serviço do OpenShift está no controlador do Rollouts
+          headers:
+            - { key: Authorization, value: "Bearer {{args.token}}" }
           query: |
             (
               # "or vector(0)": sem nenhum 5xx, a série não existe e a divisão
@@ -59,7 +72,10 @@ spec:
       successCondition: len(result) > 0 && result[0] <= 1.2
       provider:
         prometheus:
-          address: http://prometheus-cluster.monitoramento:9090
+          address: https://thanos-querier.openshift-monitoring.svc:9091
+          insecure: false
+          headers:
+            - { key: Authorization, value: "Bearer {{args.token}}" }
           query: |
             histogram_quantile(0.95, sum by (le) (rate(
               http_server_request_duration_seconds_bucket{namespace="{{args.namespace}}", sefaz_io_versao="canario"}[5m])))
@@ -75,6 +91,13 @@ spec:
   replicas: 6
   # Voltar para uma das três últimas revisões pula os passos do canário: o
   # retorno de versão em produção leva minutos, e não os 25 do canário.
+  #
+  # Durante um canário, a primeira ação é abortar o Rollout:
+  #   kubectl argo rollouts abort nfe-emissor -n fiscal-nfe-emissor-prd
+  # O abort devolve o tráfego à versão estável sem esperar o Git, porque a
+  # operação de sincronização do Argo CD fica em andamento até o canário
+  # terminar. O git revert vem depois, para o Git voltar a dizer a verdade. Medir
+  # no laboratório quanto tempo o abort leva.
   rollbackWindow:
     revisions: 3
   # O Rollout reaproveita o Deployment gerado pelo chart, em vez de duplicar o
@@ -109,6 +132,9 @@ spec:
         args:
           - name: namespace
             value: fiscal-nfe-emissor-prd
+          - name: token
+            valueFrom:
+              secretKeyRef: { name: rollouts-consulta-token, key: token }
       steps:
         - setWeight: 10
         - pause: { duration: 15m }    # a análise roda durante esta pausa
@@ -137,3 +163,23 @@ metadata:
 spec:
   selector: { app.kubernetes.io/name: nfe-emissor }
   ports: [{ name: http, port: 8080, targetPort: http }]
+---
+# Identidade de leitura do canário: ServiceAccount, token e papel de consulta ao
+# monitoramento do cluster. O Secret do tipo service-account-token guarda o token
+# que as duas métricas enviam ao thanos-querier.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rollouts-consulta
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rollouts-consulta-token
+  annotations:
+    kubernetes.io/service-account.name: rollouts-consulta
+type: kubernetes.io/service-account-token
+# O ClusterRoleBinding dessa ServiceAccount ao papel cluster-monitoring-view NÃO
+# mora aqui: o AppProject do time não cria recurso de escopo de cluster. Ele vem
+# de plataforma-addons/namespaces/, junto com a cota e a NetworkPolicy do
+# namespace, aplicado pelo projeto "plataforma" do Argo CD.

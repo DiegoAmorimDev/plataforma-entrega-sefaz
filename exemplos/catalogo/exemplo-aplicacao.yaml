@@ -6,6 +6,12 @@
 # Applications no Argo CD, painel no
 # Grafana, alertas de orçamento de erro e grupo de plantão.
 #
+# O pipeline do catálogo não tem credencial de nenhum cluster. Os objetos de
+# namespace (cota, LimitRange, NetworkPolicy, RoleBinding, ServiceAccount e
+# SecretStore) viram commit em plataforma-addons/namespaces/, e uma Application
+# do projeto "plataforma" do Argo CD, que tem permissão de escopo de cluster, os
+# aplica (docs/09).
+#
 # Meta: do merge à primeira implantação em desenvolvimento, menos de um dia.
 
 apiVersion: catalogo.sefaz.io/v1
@@ -44,7 +50,11 @@ dependencias:
   bancos:
     - tipo: oracle
       nome: DBFISCAL
-      ambiente_dev: postgres-container   # em dev, contêiner descartável
+      # Em dev, o mesmo banco de produção: Oracle em contêiner descartável
+      # (Oracle Database Free, imagem espelhada no Harbor). PostgreSQL aqui
+      # repetiria o erro que o H2 comete: o dialeto que diverge só apareceria em
+      # homologação.
+      ambiente_dev: oracle-conteiner
   servicos:
     - sefaz-autorizador
     - sefaz-certificado-digital

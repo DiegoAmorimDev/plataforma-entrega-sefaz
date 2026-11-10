@@ -38,7 +38,6 @@ generatorOptions:
 configMapGenerator:
   - name: nfe-emissor-config
     literals:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://nfe-emissor-banco.fiscal-nfe-emissor-dev:5432/nfe
+      - SPRING_DATASOURCE_URL=jdbc:oracle:thin:@//nfe-emissor-banco.fiscal-nfe-emissor-dev:1521/FREEPDB1
       - LOGGING_LEVEL_ROOT=DEBUG
-      - OTEL_TRACES_SAMPLER_ARG=1.0
       - AUTORIZADOR_URL=https://autorizador-simulado.dev.sefaz.interno

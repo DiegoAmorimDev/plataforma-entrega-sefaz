@@ -45,8 +45,19 @@ spec:
       # Carimba log e trace com namespace, pod, nó, time dono e versão. É o
       # que permite, no Grafana, ir do trace ao log do mesmo pod e filtrar a
       # investigação por time.
+      #
+      # O gateway recebe os dados do agente do nó, e não do pod: a associação
+      # padrão, pelo IP da conexão, apontaria para o pod do agente. O chart
+      # coloca o IP do pod em OTEL_RESOURCE_ATTRIBUTES (k8s.pod.ip), e a
+      # associação abaixo usa esse atributo. Alternativa descartada: carimbar no
+      # agente DaemonSet, que vê o IP de origem; exigiria dar a cada agente
+      # acesso de leitura à API do Kubernetes em todos os nós. Custo aceito: a
+      # aplicação precisa declarar o próprio IP, o que o chart faz.
       k8sattributes:
         auth_type: serviceAccount
+        pod_association:
+          - sources:
+              - { from: resource_attribute, name: k8s.pod.ip }
         extract:
           metadata: [k8s.namespace.name, k8s.pod.name, k8s.node.name, k8s.deployment.name]
           labels:

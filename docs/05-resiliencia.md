@@ -13,10 +13,18 @@ aplicação roda, quanta redundância recebe e qual compromisso de retomada a pl
 
 | Nível | Exemplo | Tempo máximo de retomada | Perda máxima de dado | Desenho |
 |---|---|---|---|---|
-| 1 | Emissão de documento fiscal, arrecadação | 15 minutos, dos quais até 10 são a decisão humana de trocar o banco de sítio | 1 minuto | Aplicação ativa nos dois sítios, banco com replicação síncrona no sítio e assíncrona entre sítios |
+| 1 | Emissão de documento fiscal, arrecadação | 20 minutos para voltar a escrever na perda de DC1 (soma de 18: 3 de detecção, até 10 de decisão do banco, cerca de 5 de promoção). Leitura volta em cerca de 9 | 1 minuto, sustentado por alerta de atraso de replicação acima de 30 segundos | Aplicação ativa nos dois sítios, banco com replicação síncrona no sítio e assíncrona entre sítios |
 | 2 | Portal do contribuinte, consulta de débito | 1 hora | 5 minutos | Ativo em DC1, espera quente em DC2 |
 | 3 | Painel interno, relatório gerencial | 8 horas | 1 hora | Ativo em DC1, restauração em DC2 por backup |
 | 4 | Ferramenta administrativa, ambiente interno | 48 horas | 24 horas | Sítio único, backup diário |
+
+A perda máxima de 1 minuto depende da replicação assíncrona entre sítios, que não tem limite
+garantido por construção. O controle que sustenta o número é um alerta de atraso de replicação
+acima de 30 segundos, que chama o plantão antes de o atraso chegar a um minuto.
+
+O tempo de 20 minutos do nível 1 é a soma de 18 minutos de parcelas, arredondada com 2 de folga. O
+cálculo está em "Falha de um datacenter inteiro", abaixo, e o exercício de continuidade mede cada
+parcela.
 
 Das 60 aplicações, a expectativa é que de 8 a 12 sejam de nível 1. Tratar todas como nível 1
 custaria o dobro de hardware e entregaria pior, porque diluiria a atenção.
@@ -105,11 +113,23 @@ eleger a principal tem três membros, todos em DC1, para que o quórum não depe
 PgBouncer aponta para um endereço virtual que o `vip-manager` mantém sempre na principal. A
 promoção dentro do sítio leva menos de trinta segundos.
 
+Na perda de DC1, o etcd inteiro vai junto, e a réplica de DC2 não tem onde decidir. A promoção é
+manual, em três passos:
+
+1. Subir o etcd de um membro numa máquina virtual já preparada e desligada em DC2.
+2. Reiniciar o Patroni de DC2 apontando para esse etcd, com a réplica promovida a principal.
+3. Mover o endereço virtual do `vip-manager` e o PgBouncer de DC2 para a nova principal.
+
+O tempo esperado é de cerca de 5 minutos, a medir no exercício de continuidade. Um etcd de um
+membro só não tolera falha, e o roteiro termina recompondo os três membros quando DC1 volta ou
+quando houver máquinas novas em DC2.
+
 > *Decisão: troca de papel entre sítios sempre humana, inclusive para o nível 1. A alternativa é o
 > Fast-Start Failover entre sítios, com o observador num terceiro local. A Secretaria não tem
 > terceiro sítio, e um observador num dos dois sítios só desloca o problema da partição de rede.
 > O custo é o nível 1 depender de uma decisão humana em até dez minutos para voltar a escrever, o
-> que entra no tempo de retomada declarado na tabela de classes.*
+> que entra no tempo de retomada declarado na tabela de classes. O DNS público é outra decisão,
+> reversível, e por isso não espera a do banco (ver "Falha de um datacenter inteiro").*
 
 A aplicação precisa colaborar, e isso é responsabilidade do time:
 
@@ -117,7 +137,9 @@ A aplicação precisa colaborar, e isso é responsabilidade do time:
   papel vira erro voltado ao usuário em vez de uma pausa de alguns segundos.
 - **Transação curta.** Transação longa segura bloqueio e impede a promoção limpa.
 - **Pool de conexão fora do pod.** Trinta réplicas com pool interno de vinte conexões pedem
-  seiscentas conexões ao banco, o que esgota o limite antes de qualquer outro recurso.
+  seiscentas conexões ao banco, o que esgota o limite antes de qualquer outro recurso. No
+  PostgreSQL, o PgBouncer faz esse papel. No Oracle, o PgBouncer não serve: o pool fica residente
+  no banco (DRCP), e o pool da aplicação tem limite por réplica, declarado no catálogo.
 
 O backup segue a regra de três cópias, dois meios, um sítio externo. Cópia completa semanal, cópia
 incremental diária, arquivos de registro de transação a cada quinze minutos. **A restauração é
@@ -134,10 +156,11 @@ O cenário de perda total de DC1 é o que define o plano de continuidade. A sequ
 
 ```mermaid
 flowchart TD
-    E["DC1 indisponível"] --> D1["Vigilância externa e Alertmanager<br/>de DC2 acionam o plantão"]
-    E --> N1["Nível 1 já em execução em prd-dc2<br/>leitura atende, escrita aguarda o banco"]
-    D1 --> DEC[/"Decisão de ativação do plano<br/>coordenador de plantão, até 10 min"\]
-    DEC --> DNS[/"DNS público aponta para<br/>o par HAProxy de DC2"\]
+    E["DC1 indisponível"] --> D1["Vigilância externa e Alertmanager<br/>de DC2 acionam o plantão, cerca de 3 min"]
+    E --> N1["Nível 1 já em execução em prd-dc2<br/>sem entrada pública até o DNS<br/>leitura depois do DNS, escrita depois do banco"]
+    D1 --> DECD[/"Decisão do DNS, reversível<br/>coordenador de plantão, até 5 min"\]
+    D1 --> DEC[/"Decisão do banco, irreversível<br/>coordenador de plantão, até 10 min"\]
+    DECD --> DNS[/"DNS público aponta para<br/>o par HAProxy de DC2, TTL de 60 s"\]
     DEC --> DB[/"Troca de papel do banco<br/>Data Guard e Patroni para DC2"\]
     DB --> N2[/"Escala nível 2 em prd-dc2<br/>réplicas de zero para o valor normal"\]
     N2 --> GL[/"GitLab secundário promovido<br/>Argo CD de contingência ativado<br/>Conjur promovido em DC2"\]
@@ -149,7 +172,7 @@ flowchart TD
     classDef trafego fill:#FBE7DC,stroke:#D55E00,color:#1F2937
     classDef dados fill:#FDF3DF,stroke:#B87D00,color:#1F2937
     classDef entrega fill:#E6F0FA,stroke:#0072B2,color:#1F2937
-    class E,DEC neutro
+    class E,DEC,DECD neutro
     class D1 observacao
     class N1,N2 execucao
     class DNS trafego
@@ -158,15 +181,32 @@ flowchart TD
 ```
 
 Os passos em retângulo são automáticos e acontecem em segundos. Os em trapézio exigem decisão
-humana, porque a troca de papel do banco é irreversível na prática: voltar para DC1 depois exige
-ressincronizar no sentido contrário. Automatizar essa decisão transforma uma oscilação de rede de
-dois minutos num dia de trabalho de reconstrução.
+humana, e são duas decisões de natureza diferente. A troca do DNS público é reversível: se o
+enlace voltar, aponta-se o DNS de volta. A troca de papel do banco é irreversível na prática:
+voltar para DC1 depois exige ressincronizar no sentido contrário. Automatizar a segunda transforma
+uma oscilação de rede de dois minutos num dia de trabalho de reconstrução. A primeira vem antes e
+não espera a segunda.
 
-**O nível 1 não fica fora do ar enquanto a decisão é tomada, mas fica sem escrita.** A aplicação
-em `prd-dc2` continua respondendo, e as consultas que podem ler da réplica de DC2 seguem
-funcionando. A emissão de nota, que escreve, devolve erro até a troca de papel. Por isso o tempo de
-retomada do nível 1 inclui a decisão humana, e por isso o roteiro de resposta dessa decisão é o mais ensaiado
-da plataforma.
+**O nível 1 fica indisponível para o público até a troca do DNS, lê depois dela e escreve depois
+da troca do banco.** O DNS público aponta para DC1, então nenhum pedido externo chega a `prd-dc2`
+enquanto a troca não acontece. A conta do tempo, contada a partir da perda de DC1:
+
+| Parcela | Tempo |
+|---|---|
+| Detecção pelo sinal de vida externo | cerca de 3 minutos |
+| Decisão do DNS, a partir do acionamento | até 5 minutos |
+| Tempo de vida do DNS | 60 segundos |
+| **Entrada pública em DC2, com leitura** | **cerca de 9 minutos** |
+| Decisão do banco, a partir do acionamento | até 10 minutos |
+| Promoção do PostgreSQL ou do Oracle em DC2 | cerca de 5 minutos |
+| **Escrita no nível 1** | **cerca de 18 minutos** |
+
+As duas decisões correm em paralelo; a escrita é limitada pela segunda. Os 18 minutos
+entram na tabela de classes como 20, com 2 de folga. A emissão de nota, que escreve, devolve erro até a troca de papel do banco. Só o
+PostgreSQL lê da réplica de DC2: sem Active Data Guard, a instância Oracle em espera não atende
+consulta. Quem quiser menos de 18 minutos tem dois caminhos, DNS com verificação de saúde e
+promoção automática do banco, e ambos tiram a decisão humana que esta proposta mantém de
+propósito. O roteiro de resposta dessas decisões é o mais ensaiado da plataforma.
 
 ### A borda
 
@@ -175,8 +215,9 @@ sítio. Nenhuma rede é esticada entre DC1 e DC2. Em operação normal, o DNS p�
 endereço de DC1, e o par de DC1 distribui o tráfego entre os roteadores dos dois sítios. O par de
 DC2 fica configurado e testado, sem receber tráfego externo.
 
-Na perda de DC1, o plano inclui apontar o DNS público para o endereço de DC2. Com tempo de vida de
-sessenta segundos nos registros, a troca se completa em poucos minutos para a maioria dos clientes.
+Na perda de DC1, o plano inclui apontar o DNS público para o endereço de DC2, em até 5 minutos
+depois do acionamento. Com tempo de vida de sessenta segundos nos registros, a troca se completa
+em poucos minutos para a maioria dos clientes.
 A configuração do par está em [`exemplos/borda/haproxy.cfg`](../exemplos/borda/haproxy.cfg).
 
 > *Decisão: troca da entrada pública por DNS com tempo de vida curto, e não por anúncio de rota
@@ -189,16 +230,20 @@ A configuração do par está em [`exemplos/borda/haproxy.cfg`](../exemplos/bord
 
 O Grafana e a consulta global do Thanos ficam em `plat-dc1` e caem junto com DC1. O que não pode
 cair junto é a capacidade de acordar alguém. Por isso cada cluster de execução tem o próprio
-Prometheus, que avalia as regras de alerta localmente, e o Alertmanager roda em agrupamento com
-membros nos dois sítios. `prd-dc2` continua avaliando e notificando sem DC1.
+Prometheus, que avalia as regras de alerta localmente, e há um Alertmanager por cluster, inclusive
+em `prd-dc2`. Cada cluster envia o próprio sinal de vida. `prd-dc2` continua avaliando e
+notificando sem DC1. A alternativa descartada é um agrupamento de Alertmanager com membros nos
+dois sítios, que exige um membro de DC2 fora dos clusters e um enlace saudável para deduplicar. O
+custo aceito é o plantão poder receber o mesmo alerta de dois clusters, que a rota de
+agrupamento por aplicação reduz a uma chamada.
 
 Falta ainda o caso em que o próprio Alertmanager some. Uma regra que dispara sempre, o sinal de
 vida, é enviada a cada minuto para um serviço de vigilância hospedado fora dos dois datacenters.
 Se o sinal parar de chegar, esse serviço aciona o plantão por conta própria.
 
 **Capacidade de DC2.** Se DC2 for dimensionado com metade da capacidade, a operação em sítio único
-roda degradada, e é preciso decidir o que desligar. A proposta é dimensionar DC2 com 70 por cento
-de DC1, e declarar antecipadamente, no catálogo, quais aplicações de nível 3 e 4 são suspensas em
+roda degradada, e é preciso decidir o que desligar. A proposta é dimensionar DC2 com 75 por cento
+de DC1 (9 de 12 nós de trabalho), e declarar antecipadamente, no catálogo, quais aplicações de nível 3 e 4 são suspensas em
 caso de contingência. Essa lista precisa ser acordada com as áreas de negócio antes do evento, não
 durante.
 
@@ -218,11 +263,11 @@ regra do caminho reverso. Plano de continuidade nunca exercitado é um documento
 | Cluster de produção | Dois, um por sítio | O HAProxy tira o cluster em cerca de seis segundos |
 | Borda | Par de HAProxy por sítio, com VRRP | O endereço virtual passa ao par em segundos |
 | Oracle | Duas instâncias em DC1 com troca automática; espera em DC2 | Troca automática no sítio; entre sítios, decisão humana |
-| PostgreSQL | Patroni com três instâncias; PgBouncer atrás de endereço virtual | Promoção automática no sítio em menos de 30 segundos |
+| PostgreSQL | Patroni com três instâncias; PgBouncer atrás de endereço virtual; etcd de três membros em DC1 e uma máquina de reserva em DC2 | Promoção automática no sítio em menos de 30 segundos; entre sítios, roteiro manual de cerca de 5 minutos |
 | Conjur | Líder e espera em DC1; espera e réplica de leitura em DC2 | Pods continuam com o `Secret` já no cluster |
 | Harbor, GitLab, MinIO | Réplica em DC2 | Promoção manual da réplica, em dezenas de minutos |
 | Argo CD | Alta disponibilidade em `plat-dc1`; contingência desligada em DC2 | Sem implantação nova até voltar ou até a contingência ser ativada |
-| Prometheus e Alertmanager | Um Prometheus por cluster; Alertmanager com membros nos dois sítios; sinal de vida externo | Cada cluster continua alertando sozinho |
+| Prometheus e Alertmanager | Um Prometheus e um Alertmanager por cluster, inclusive em `prd-dc2`; cada cluster envia o próprio sinal de vida externo | Cada cluster continua alertando sozinho |
 
 ---
 
@@ -235,7 +280,7 @@ Esta é a parte que o desenho não resolve, e declará-la é mais útil do que e
 | Enlace entre DC1 e DC2 | Replicação de banco para e os sítios divergem | Dois caminhos de operadoras distintas | Falha simultânea dos dois caminhos; partição de rede com os dois sítios vivos |
 | DNS corporativo | Nada se resolve, nem internamente | Dois servidores, um por sítio | Erro de configuração se propaga aos dois |
 | Diretório corporativo e Keycloak | Ninguém autentica no OpenShift, GitLab, Grafana e Argo CD | Réplica do diretório e instância do Keycloak em DC2; conta local de emergência em cofre físico, com uso auditado | Erro de configuração replicado para a réplica junto com o dado |
-| Borda e DNS público | Contribuinte não alcança nenhuma aplicação | Par de HAProxy em cada sítio; DNS com tempo de vida de 60 segundos | A troca do DNS é manual e depende da cópia guardada pelos clientes |
+| Borda e DNS público | Contribuinte não alcança nenhuma aplicação | Par de HAProxy em cada sítio; DNS com tempo de vida de 60 segundos | A troca do DNS é manual, decidida em até 5 minutos, e o nível 1 fica sem entrada pública até ela; depende também da cópia guardada pelos clientes |
 | Observabilidade em `plat-dc1` | Sem painel e sem consulta global na perda de DC1 | Prometheus e Alertmanager em cada cluster; sinal de vida para vigilância externa | Investigação de incidente em DC2 sem o histórico longo até `plat-dc1` voltar |
 | vCenter | Nenhuma máquina virtual nova; as existentes continuam | vCenter High Availability | Os clusters sobrevivem, mas a plataforma perde a capacidade de crescer |
 | Conjur | Segredo novo e rotação param; pods em execução e pods reagendados continuam, porque o `Secret` já está no cluster | Líder e réplica de espera em DC1, réplica de espera e réplica de leitura em DC2 | Perda da chave de dados do cofre; guardada em cofre físico com custódia dividida |

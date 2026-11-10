@@ -1,0 +1,29 @@
+{{- if .Values.autoscaling.enabled }}
+# HPA só existe quando a aplicação liga o autoscaling. Com o canário, o alvo é o
+# Rollout (que assume o Deployment gerado por este chart); o Argo CD ignora as
+# réplicas escritas pelo HPA (appsets/aplicacoes.yaml).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "app-base.fullname" . }}
+  labels: {{- include "app-base.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    {{- if .Values.canario.habilitado }}
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    {{- else }}
+    apiVersion: apps/v1
+    kind: Deployment
+    {{- end }}
+    name: {{ include "app-base.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

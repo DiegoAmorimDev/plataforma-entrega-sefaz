@@ -18,24 +18,29 @@ terraform {
 # Este módulo não configura provedor nem backend: quem o chama configura.
 # No módulo raiz de infra-vsphere, a credencial do vCenter vem do Conjur no
 # momento da execução, nunca de variável de CI de longa duração nem de arquivo,
-# e o estado fica no backend do GitLab, com trava:
+# e o estado fica no backend do GitLab, com trava.
+#
+# A credencial NÃO é lida por data "conjur_secret": o valor iria para o estado
+# do Terraform, em texto claro, e o estado é lido por quem tem acesso ao projeto
+# de infraestrutura. O job lê o segredo e o entrega por variável de ambiente,
+# que o provedor vsphere aceita sem argumento no bloco:
+#
+#   # No job de CI, com a identidade do job (ADR-008):
+#   export VSPHERE_USER="$(conjur-segredo plataforma/vcenter/dc1/usuario)"
+#   export VSPHERE_PASSWORD="$(conjur-segredo plataforma/vcenter/dc1/senha)"
 #
 #   terraform {
 #     backend "http" {}                # estado no GitLab; duas pessoas não aplicam juntas
-#     required_providers {
-#       conjur = { source = "cyberark/conjur" }
-#     }
 #   }
-#
-#   # O job autentica no Conjur pelo token de identidade do GitLab CI (ADR-008).
-#   data "conjur_secret" "vcenter_usuario" { name = "plataforma/vcenter/dc1/usuario" }
-#   data "conjur_secret" "vcenter_senha"   { name = "plataforma/vcenter/dc1/senha" }
 #
 #   provider "vsphere" {
 #     vsphere_server = "vcenter-dc1.sefaz.interno"
-#     user           = data.conjur_secret.vcenter_usuario.value
-#     password       = data.conjur_secret.vcenter_senha.value
+#     # usuário e senha vêm de VSPHERE_USER e VSPHERE_PASSWORD
 #   }
+#
+# Custo aceito: o job de infraestrutura depende do utilitário conjur-segredo,
+# que já é premissa de toda a esteira. Alternativa descartada: o provedor do
+# Conjur no próprio plano, mais direto, mas que grava a senha no estado.
 #
 #   module "workers_dev_dc1" {
 #     source     = "./modulos/vsphere-worker"
@@ -49,8 +54,11 @@ locals {
   nome_base = "${var.cluster}-${var.funcao}"
 
   # Espalha as máquinas pelos hosts em rodízio. Combinado com a regra de
-  # anti-afinidade abaixo, garante que perder um host físico não leve mais de
-  # um nó do mesmo cluster.
+  # anti-afinidade abaixo, tende a manter no máximo um nó do mesmo cluster por
+  # host físico. Só vale enquanto a quantidade não passa do número de hosts: a
+  # verificação no recurso (precondition) barra o plano quando passa. A regra de
+  # anti-afinidade é preferencial, então o vSphere HA ainda pode juntar dois nós
+  # num host depois de uma falha; o rodízio não é garantia.
   distribuicao = {
     for i in range(var.quantidade) :
     format("%s-%02d", local.nome_base, i + 1) => {
@@ -128,6 +136,13 @@ resource "vsphere_virtual_machine" "no" {
   # devem reaparecer como desvio no plano diário.
   lifecycle {
     ignore_changes = [annotation, clone[0].template_uuid]
+
+    # Mais nós que hosts põe dois nós no mesmo host, e perder esse host derruba
+    # os dois. O plano falha em vez de aceitar em silêncio.
+    precondition {
+      condition     = var.quantidade <= length(var.hosts_esxi)
+      error_message = "quantidade maior que o número de hosts ESXi: dois nós do mesmo cluster dividiriam um host físico."
+    }
   }
 }
 

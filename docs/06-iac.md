@@ -104,7 +104,8 @@ Argo CD.
 
 O Argo CD gerenciar a si mesmo tem uma consequência prática: a configuração dele, incluindo
 projetos, permissões e repositórios conectados, está no Git. Reconstruir o Argo CD é instalar a
-versão mínima e apontar para o repositório. Em menos de trinta minutos, ele reconstrói o resto.
+versão mínima e apontar para o repositório. A expectativa é que ele reconstrua o resto em menos de
+trinta minutos, e esse número é hipótese a validar no exercício de continuidade, não medida.
 
 ### Camada 4: configuração das ferramentas
 
@@ -144,9 +145,20 @@ aprovar a alteração.
 
 A separação entre `manifestos-apps` e os demais é a que mais importa no dia a dia. Ela permite dar
 ao time autonomia sobre a própria implantação sem dar acesso à infraestrutura. Dentro dele, o
-arquivo `CODEOWNERS` garante que cada time só aprove o próprio diretório; a aprovação de dono é
-exigida nos caminhos de produção, e em `hml` o merge request do promotor entra sozinho quando o
-pipeline passa. Em produção, o pipeline
+arquivo `CODEOWNERS` garante que cada time só aprove o próprio diretório. Ele dá dono a
+`apps/*/*/overlays/hml*/` e a `apps/*/*/overlays/prd*/`, e a proteção de `main` exige aprovação de
+dono de código. O GitLab recusa, por isso, o push direto que toque esses caminhos: o token do
+promotor só escreve direto em `overlays/dev/`, e em `hml` e `prd` ele abre merge request. Em `hml`,
+o merge request do promotor entra sozinho quando o pipeline passa, depois de a esteira pedir o
+rebase pela API.
+
+> *Decisão: o limite de caminho vive na proteção de `main` e no `CODEOWNERS`, e não no token. O
+> token do promotor é um só, e quem controla o `.gitlab-ci.yml` do próprio projeto poderia trocar o
+> script do job e editar produção direto. A alternativa, um token por ambiente, multiplicaria
+> segredos por aplicação sem fechar o caso. O custo é o merge request de `hml` precisar de rebase
+> a cada avanço de `main`, o que o job de promoção faz.*
+
+Em produção, o pipeline
 do repositório distingue a promoção pura, que só troca o digest e é aprovada por duas pessoas do
 time, da mudança estrutural, que exige também a plataforma
 ([`exemplos/gitops/.gitlab-ci.yml`](../exemplos/gitops/.gitlab-ci.yml)). Com sessenta aplicações e

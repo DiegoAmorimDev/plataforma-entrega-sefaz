@@ -52,6 +52,17 @@ flowchart LR
 | `manifestos-apps` | Estado desejado das 60 aplicações, por ambiente | Promotor da esteira e time dono | Promotor em `dev` e `hml`, sem aprovação humana; em `prd`, duas pessoas do time dono, e a plataforma também quando a mudança vai além do digest |
 | `plataforma-addons` | Componentes de cluster e a configuração do Argo CD | Plataforma | Plataforma, duas aprovações |
 
+Os objetos de namespace (cota, `LimitRange`, `NetworkPolicy`, `RoleBinding`, `ServiceAccount` e
+`SecretStore`) seguem outro caminho. O pipeline do catálogo faz commit deles em
+`plataforma-addons/namespaces/`, e uma `Application` do projeto `plataforma`, que tem permissão de
+escopo de cluster, os aplica nos quatro clusters. O pipeline continua sem credencial de cluster, e o
+`AppProject` do time continua sem poder criar nenhum desses objetos.
+
+> *Decisão: o catálogo escreve em Git, e o Argo CD aplica. A alternativa, o pipeline do catálogo
+> criar os namespaces direto com uma credencial de cluster, abriria uma exceção à regra de que o
+> GitLab nunca tem credencial de produção. O custo é a criação do namespace esperar a próxima
+> sincronização do Argo CD, e o primeiro deploy de uma aplicação nova depender dela.*
+
 O repositório de código da aplicação não aparece na lista de origens do Argo CD. **O Argo CD nunca
 lê código, só manifesto.** Um time que consiga alterar o próprio pipeline não ganha, com isso,
 caminho direto até o cluster.
@@ -133,9 +144,18 @@ versão.
 
 ## Como as Applications nascem
 
-Ninguém cria `Application` à mão. Um `ApplicationSet` cruza duas listas: todo diretório de
-aplicação em `manifestos-apps` e todo cluster de execução registrado no Argo CD. Cada combinação
-vira uma `Application`. Com 60 aplicações e quatro clusters, são 240 objetos que ninguém mantém.
+Ninguém cria `Application` à mão. Um `ApplicationSet` parte dos diretórios de overlay em
+`manifestos-apps` (`apps/<time>/<app>/overlays/<overlay>`) e cruza cada um com o cluster de execução
+cujo rótulo `sefaz.io/overlay` é igual ao nome do diretório. Cada cruzamento vira uma `Application`:
+uma por overlay existente. São, no máximo, quatro por aplicação, e menos quando a aplicação não tem
+todos os overlays. Uma aplicação de nível 3 ou 4 sem `prd-dc2`, ou uma aplicação nova que só tem
+`overlays/dev`, não gera `Application` nos outros clusters.
+
+> *Decisão: gerar a partir dos overlays que existem, e não de toda aplicação vezes todo cluster. O
+> cruzamento completo geraria `Application` em erro de comparação para cada overlay que não existe,
+> e esse erro dispararia o alerta de aplicação degradada. O custo é um overlay esquecido não gerar
+> erro: a aplicação simplesmente não aparece naquele cluster. O pipeline do catálogo confere que
+> cada aplicação tem os overlays que o nível dela exige.*
 
 O cluster entra no cruzamento pelos rótulos que recebe ao ser registrado:
 
@@ -147,9 +167,10 @@ O cluster entra no cruzamento pelos rótulos que recebe ao ser registrado:
 | `prd-dc2` | prd | prd-dc2 | false |
 
 Os quatro também levam `sefaz.io/execucao: "true"`, que é o que os separa de `plat-dc1` no
-cruzamento.
+cruzamento. O diretório `overlays/prd` é a base que os dois overlays de produção compartilham, e
+nenhum cluster tem o rótulo `prd`, então ele não gera `Application`.
 
-O caminho de cada `Application` é `apps/<time>/<app>/overlays/<overlay>`. Um cluster novo, como um
+O caminho de cada `Application` é o próprio diretório do overlay. Um cluster novo, como um
 terceiro de produção, entra registrando o cluster com os rótulos certos, sem tocar no
 `ApplicationSet`. O gerador está em
 [`exemplos/gitops/appsets/aplicacoes.yaml`](../exemplos/gitops/appsets/aplicacoes.yaml).
@@ -291,6 +312,14 @@ porta fechada atrapalha, e o procedimento de emergência precisa existir antes d
 sincroniza, e os pods voltam à imagem anterior em um a dois minutos. Funciona dentro e fora da
 janela, porque o plantão tem permissão para sincronizar fora dela.
 
+**Durante um canário, a primeira ação é abortar o `Rollout`, não reverter.** A operação de
+sincronização do Argo CD fica em andamento até o canário terminar, cerca de 25 minutos, e enquanto
+ela dura o `git revert` só seria aplicado ao fim. O plantão executa
+`kubectl argo rollouts abort <aplicação>`, que devolve o tráfego à versão estável sem esperar o
+Git, e só depois faz o `git revert`, para o Git voltar a descrever a realidade. Os um a dois
+minutos valem para a promoção já concluída. **Medir no laboratório** quanto tempo o aborto leva e
+como o Argo CD trata a operação de sincronização que ficou presa.
+
 **O caminho de emergência existe para quando o Git está lento demais**, por exemplo com o GitLab
 indisponível. São quatro passos, e a ordem importa:
 
@@ -346,6 +375,22 @@ por dois motivos: está em fase beta, e desliga a sincronização automática de
 > exigência, ela entra como duas etapas de promoção, uma por sítio, e não pela sincronização
 > progressiva.*
 
+**O canário de `prd-dc2` precisa de volume para a análise valer.** Com a divisão 70/30 da borda, o
+sítio de `prd-dc2` recebe cerca de 30 por cento do tráfego, e o canário de 10 por cento fica com
+cerca de 3 por cento do total da aplicação. Um resultado vazio conta como falha, então, de
+madrugada, o canário de `prd-dc2` tende a abortar por falta de dado, e não por defeito da versão.
+A regra é um volume mínimo de requisições por minuto no canário, calibrado por aplicação (ponto de
+partida: cerca de 30 requisições por minuto, suficiente para uma taxa de erro de 1,5 vez a da
+estável ser distinguível de ruído). Abaixo dele, a análise de `prd-dc2` usa a métrica somada dos
+dois sítios, consultada no Thanos de `plat-dc1`; se `plat-dc1` estiver fora, o canário de `prd-dc2`
+roda só em horário com volume e a promoção espera.
+
+> *Decisão: o canário de `prd-dc2` cai para a métrica somada dos dois sítios quando o volume local
+> é baixo. A alternativa, tratar resultado vazio como sucesso, deixaria passar versão ruim de
+> madrugada. O custo é a análise de `prd-dc2` depender, nesse caso, do Thanos de `plat-dc1`, o que
+> contradiz a independência que o desenho busca; por isso é a exceção, e o volume mínimo deve ser
+> medido no laboratório.*
+
 ---
 
 ## O próprio Argo CD
@@ -387,7 +432,8 @@ flowchart LR
     style DC2 fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
 ```
 
-**Como escala.** São 240 `Applications` mais os componentes de plataforma. O controlador de
+**Como escala.** São até 240 `Applications`, uma por overlay existente, mais os componentes de
+plataforma. O controlador de
 aplicação divide os clusters entre réplicas, uma fatia por réplica, e o servidor de renderização
 guarda o resultado de cada commit. A renderização com Helm dentro do Kustomize é a parte mais cara,
 e guardar o resultado é o que a torna aceitável.

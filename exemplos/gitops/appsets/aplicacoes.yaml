@@ -1,10 +1,18 @@
-# ApplicationSet que gera uma Application do Argo CD por aplicação e por cluster.
+# ApplicationSet que gera uma Application do Argo CD por overlay existente.
 #
 # O efeito prático: aplicação nova não exige nenhuma configuração no Argo CD.
-# O processo de catálogo cria o diretório em manifestos-apps, e na próxima
-# varredura o gerador cria as quatro Applications sozinho.
+# O processo de catálogo cria os diretórios em manifestos-apps, e na próxima
+# varredura o gerador cria uma Application para cada overlay que existe.
 #
-# Sem isso, 60 aplicações em 4 clusters seriam 240 objetos mantidos à mão.
+# Sem isso, cada overlay seria um objeto mantido à mão: até 240 para 60
+# aplicações em 4 clusters.
+#
+# O gerador parte dos diretórios de overlay, e não de "toda aplicação vezes todo
+# cluster". Aplicação que só tem overlays/dev, ou de nível 3 e 4 sem prd-dc2
+# (sítio único), não ganha Application em erro de comparação nos outros clusters.
+# O custo: um overlay esquecido não gera alerta de ausência, só a aplicação que
+# não aparece naquele cluster; o pipeline do catálogo confere os overlays que o
+# nível da aplicação exige.
 
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
@@ -16,17 +24,23 @@ spec:
   goTemplateOptions: ["missingkey=error"]
 
   generators:
-    # matrix: cruza "todo diretório de aplicação" com "todo cluster de execução".
+    # matrix: cruza "todo diretório de overlay" com "o cluster cujo rótulo
+    # sefaz.io/overlay é igual ao nome desse diretório".
     - matrix:
         generators:
           - git:
               repoURL: https://git.sefaz.interno/plataforma/manifestos-apps.git
               revision: main
               directories:
-                - path: apps/*/*
+                # apps/<time>/<aplicação>/overlays/<overlay>. O diretório
+                # overlays/prd é a base compartilhada pelos dois sítios e não
+                # tem cluster com esse rótulo, então não gera Application.
+                - path: apps/*/*/overlays/*
           # Os clusters entram pelos rótulos do registro, não por endereço fixo
           # neste arquivo. Um terceiro cluster de produção entra registrando o
-          # cluster com os rótulos certos, sem tocar aqui.
+          # cluster com os rótulos certos, sem tocar aqui. Todo cluster de
+          # execução leva sefaz.io/execucao=true e um sefaz.io/overlay igual ao
+          # nome do diretório que ele executa:
           #   dev-dc1 → ambiente=dev overlay=dev     prune=true
           #   hml-dc1 → ambiente=hml overlay=hml     prune=true
           #   prd-dc1 → ambiente=prd overlay=prd-dc1 prune=false
@@ -35,6 +49,7 @@ spec:
               selector:
                 matchLabels:
                   sefaz.io/execucao: "true"
+                  sefaz.io/overlay: '{{.path.basename}}'
 
   template:
     metadata:
@@ -49,6 +64,7 @@ spec:
           https://grafana.sefaz.interno/d/app/{{index .path.segments 2}}
         # Avisos para o GitLab, o Grafana e o canal do time (configuracao.yaml).
         notifications.argoproj.io/subscribe.on-sync-succeeded.gitlab: ""
+        notifications.argoproj.io/subscribe.on-sync-failed.gitlab: ""
         notifications.argoproj.io/subscribe.on-deployed.grafana: ""
         notifications.argoproj.io/subscribe.on-health-degraded.mattermost: 'canal-{{index .path.segments 1}}'
         notifications.argoproj.io/subscribe.on-sync-failed.mattermost: 'canal-{{index .path.segments 1}}'
@@ -57,7 +73,7 @@ spec:
       source:
         repoURL: https://git.sefaz.interno/plataforma/manifestos-apps.git
         targetRevision: main
-        path: '{{.path.path}}/overlays/{{index .metadata.labels "sefaz.io/overlay"}}'
+        path: '{{.path.path}}'
       destination:
         server: '{{.server}}'
         namespace: '{{index .path.segments 1}}-{{index .path.segments 2}}-{{index .metadata.labels "sefaz.io/ambiente"}}'
@@ -120,7 +136,8 @@ spec:
   # Duas proteções, porque cada uma cobre metade:
   #   applicationsSync: create-update — o controlador cria e atualiza
   #     Applications, mas nunca as apaga. Exige a opção
-  #     applicationsetcontroller.enable.policy.override no Argo CD.
+  #     applicationsetcontroller.enable.policy.override no Argo CD, ligada no
+  #     argocd-cmd-params-cm (argocd/configuracao.yaml).
   #   preserveResourcesOnDeletion — se a Application for apagada à mão, os
   #     objetos no cluster ficam.
   syncPolicy:
@@ -154,6 +171,10 @@ spec:
     # próprio SecretStore poderia apontar para outra identidade.
     - group: external-secrets.io
       kind: SecretStore
+    # Segredo só nasce do External Secrets. Impede o secretGenerator do
+    # Kustomize de materializar valor no Git: o objeto Secret é do operador.
+    - group: ''
+      kind: Secret
   roles:
     # Os grupos vêm do Keycloak, que lê o diretório corporativo.
     - name: time
