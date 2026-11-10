@@ -16,3 +16,8 @@ ninguém sabe se a razão original ainda vale.
 | [005](ADR-005-sem-service-mesh-na-fase-inicial.md) | Sem malha de serviço nos doze primeiros meses | Istio ou Linkerd desde a fundação |
 | [006](ADR-006-harbor-como-registry.md) | Harbor como registry de contêiner | Quay, ou o registry interno do GitLab |
 | [007](ADR-007-promocao-por-digest.md) | Promoção entre ambientes move o digest da imagem | Reconstruir a imagem por ambiente |
+| [008](ADR-008-conjur-como-cofre.md) | Conjur como cofre, rotação pelo PAM, consumo pelo External Secrets | Vault ou OpenBao; aplicação chamando a API do cofre |
+| [009](ADR-009-argocd-central-com-contingencia.md) | Um Argo CD central, com contingência desligada em DC2 | Uma instância por cluster |
+| [010](ADR-010-promocao-por-merge-request.md) | Promoção por merge request aberto pela esteira | Argo CD Image Updater ou Kargo |
+| [011](ADR-011-ambiente-por-diretorio.md) | Ambiente é diretório no mesmo branch | Um branch por ambiente |
+| [012](ADR-012-sonarqube-community.md) | SonarQube Community, com cobertura do merge request pelo `diff-cover` | Edição Developer |

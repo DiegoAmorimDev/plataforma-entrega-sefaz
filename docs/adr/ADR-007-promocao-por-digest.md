@@ -26,7 +26,7 @@ diferença. O defeito que aparece só em produção, nesse modelo, é impossíve
 **Promover trocando a tag.** Melhor que reconstruir, mas ainda frágil. Tag é um ponteiro mutável:
 `app:prd` pode ser reapontada por qualquer pessoa com acesso de escrita no registry, inclusive por
 engano. O manifesto fica idêntico antes e depois, o que torna a alteração invisível no Git. Além
-disso, o nó que já tem `app:prd` em cache pode não perceber a mudança, conforme a política de
+disso, o nó que já tem `app:prd` guardada pode não perceber a mudança, conforme a política de
 obtenção da imagem.
 
 ## Consequência aceita
@@ -50,5 +50,11 @@ controles.
 
 ## O que mudaria a decisão
 
-Nada identificado. Esta é a decisão de menor custo e maior retorno do conjunto, e o único argumento
-contrário é a legibilidade do manifesto, resolvida pelo comentário automático.
+- **Se a correção da imagem base demorar a chegar às aplicações.** Com digest fixo, uma correção de
+  segurança na base só chega a produção quando cada aplicação reconstrói e promove. Se o tempo
+  entre a correção da base e as 60 aplicações reconstruídas passar de duas semanas, a plataforma
+  passa a disparar reconstrução automática em `main`, que gera um digest novo e percorre a esteira
+  inteira. Nunca reconstrução por ambiente.
+- **Se o build passar a ser reprodutível e atestado por proveniência**, reconstruir deixa de ser
+  risco para a garantia de que o testado é o que executa. A referência por digest continua, porque
+  ainda é o que torna a mudança visível no Git.

@@ -34,7 +34,7 @@ O custo da escolha é operacional, e é real:
 
 - Duas atualizações de cluster por ciclo, em vez de uma.
 - O mesmo objeto precisa existir nos dois clusters, o que o `ApplicationSet` resolve com um
-  gerador de lista, mas que o time precisa entender ao depurar.
+  cruzamento de diretórios com clusters do `ApplicationSet`, mas que o time precisa entender ao depurar.
 - A falha de um sítio não move pods sozinha. Para aplicação de nível 1, a réplica já está em
   execução no outro sítio. Para nível 2, há uma ação humana de escalar.
 - Aplicação com estado precisa decidir em qual sítio o volume vive, e isso não é transparente.

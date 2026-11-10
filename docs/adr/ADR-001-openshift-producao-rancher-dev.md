@@ -15,7 +15,7 @@ rígido. Rancher com RKE2 custa menos, é mais flexível e serve como console mu
 ## Decisão
 
 Produção e homologação rodam em OpenShift. Desenvolvimento roda em RKE2 gerenciado pelo Rancher.
-O Rancher importa os quatro clusters e serve de inventário único.
+O Rancher importa os cinco clusters e serve de inventário único.
 
 ## Alternativa descartada
 
@@ -36,9 +36,11 @@ contenções:
 
 1. O chart base emite `Route` ou `Ingress` conforme o ambiente, e o time não escreve nenhum dos
    dois.
-2. A política de admissão do Kyverno é idêntica nos quatro clusters, de modo que o que é recusado
-   em produção também é recusado em desenvolvimento.
-3. Um teste de conformidade instala a mesma aplicação de referência nos quatro clusters a cada
+2. As políticas de admissão do Kyverno são as mesmas nos quatro clusters de execução. Origem e
+   assinatura da imagem são obrigatórias em homologação e produção; em desenvolvimento ficam em
+   auditoria, e o relatório mostra ao time, antes de promover, o que seria recusado adiante.
+3. Um teste de conformidade instala a mesma aplicação de referência nos quatro clusters de execução
+   a cada
    atualização e compara comportamento.
 
 Homologação ser OpenShift é o que mantém a garantia: qualquer coisa que dependa de distribuição

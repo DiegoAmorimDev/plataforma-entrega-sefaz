@@ -42,10 +42,11 @@ e quando.
 - Mais uma ferramenta para operar, com atualização, backup e plano próprio de recuperação.
 - O time vê dois lugares: o pipeline da aplicação e o estado da aplicação no Argo CD. Até o hábito
   se formar, isso gera a pergunta "meu pipeline passou, por que não subiu".
-- O commit automático do pipeline no repositório de manifestos exige um token com escopo restrito,
-  que precisa ser rotacionado.
-- A correção automática de desvio impede ajuste manual emergencial. Durante incidente, a saída é
-  elevação temporária de permissão registrada, seguida do `git revert` correspondente.
+- O commit automático do pipeline no repositório de manifestos exige um token com escopo restrito.
+  Ele vem do Conjur pela identidade do job e é rotacionado pelo PAM (ADR-008).
+- A correção automática de desvio impede ajuste manual emergencial. Durante incidente, a saída é o
+  `git revert`; com o GitLab indisponível, o plantão da plataforma desliga a sincronização daquela
+  aplicação, volta à sincronização anterior e abre o `git revert` depois (`docs/09`).
 
 ## O que mudaria a decisão
 
