@@ -78,10 +78,13 @@ mesma versão, mesmas políticas de admissão, mesmo controlador de entrada, mes
 muda é a quantidade de réplicas e a capacidade dos nós. Essa igualdade é o que torna o resultado da
 homologação uma evidência útil.
 
-**`prd-dc1` e `prd-dc2` existem separados, e não como um cluster esticado entre sítios.** Um
-cluster esticado coloca o quórum do etcd dependendo do enlace entre datacenters: uma oscilação de
-rede de trinta segundos vira perda de plano de controle nos dois lados. Dois clusters independentes
-trocam essa fragilidade por um custo de operação maior, que é pagar duas atualizações em vez de uma.
+**`prd-dc1` e `prd-dc2` existem separados, e não como um cluster esticado entre sítios.** O etcd
+de três membros precisa de maioria, e dois sítios não dividem três membros por igual: um fica com
+dois, o outro com um. Se cair o sítio que tem os dois, o sobrevivente fica sem quórum e não aceita
+nenhuma mudança, justamente na contingência. Se o enlace cair com os dois vivos, o sítio com um
+membro congela, e a oscilação do enlace provoca trocas de líder que instabilizam o cluster inteiro.
+Dois clusters independentes trocam essa fragilidade por um custo de operação maior, que é pagar
+duas atualizações em vez de uma.
 
 > *Decisão: produção é dois clusters independentes, um por sítio, em vez de um cluster esticado.
 > O critério que inverteria a escolha é enlace com latência abaixo de 2 ms e três sítios para o
