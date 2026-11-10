@@ -1,25 +1,49 @@
-# Módulo que cria nós de trabalho de um cluster no vSphere.
+# Módulo que cria nós de trabalho do RKE2 (dev-dc1) no vSphere.
 #
 # Entrada: função do nó e quantidade. Saída: máquinas criadas, espalhadas por
-# host físico, já no inventário do Ansible.
+# host físico, já no inventário do Ansible, que aplica a linha de base.
+#
+# Nó de OpenShift não nasce aqui: a instalação IPI cria os nós, e o próprio
+# cluster os substitui pelo MachineSet (docs/06, camada 2). O mesmo padrão
+# deste módulo serve às outras máquinas fora do OpenShift: bancos, Conjur e
+# HAProxy.
 
 terraform {
   required_version = ">= 1.6"
   required_providers {
     vsphere = { source = "hashicorp/vsphere", version = "~> 2.8" }
-    vault   = { source = "hashicorp/vault",   version = "~> 4.2" }
   }
-  # Estado no backend do GitLab, com trava. Estado em disco local permite duas
-  # pessoas aplicarem ao mesmo tempo e destruírem recurso uma da outra.
-  backend "http" {}
 }
 
-# Credencial do vCenter vem do Vault no momento da execução. Nunca em variável
-# de CI de longa duração, nunca em arquivo.
-data "vault_kv_secret_v2" "vcenter" {
-  mount = "plataforma"
-  name  = "vcenter/${var.sitio}"
-}
+# Este módulo não configura provedor nem backend: quem o chama configura.
+# No módulo raiz de infra-vsphere, a credencial do vCenter vem do Conjur no
+# momento da execução, nunca de variável de CI de longa duração nem de arquivo,
+# e o estado fica no backend do GitLab, com trava:
+#
+#   terraform {
+#     backend "http" {}                # estado no GitLab; duas pessoas não aplicam juntas
+#     required_providers {
+#       conjur = { source = "cyberark/conjur" }
+#     }
+#   }
+#
+#   # O job autentica no Conjur pelo token de identidade do GitLab CI (ADR-008).
+#   data "conjur_secret" "vcenter_usuario" { name = "plataforma/vcenter/dc1/usuario" }
+#   data "conjur_secret" "vcenter_senha"   { name = "plataforma/vcenter/dc1/senha" }
+#
+#   provider "vsphere" {
+#     vsphere_server = "vcenter-dc1.sefaz.interno"
+#     user           = data.conjur_secret.vcenter_usuario.value
+#     password       = data.conjur_secret.vcenter_senha.value
+#   }
+#
+#   module "workers_dev_dc1" {
+#     source     = "./modulos/vsphere-worker"
+#     cluster    = "dev-dc1"
+#     funcao     = "worker"
+#     quantidade = 4
+#     ...
+#   }
 
 locals {
   nome_base = "${var.cluster}-${var.funcao}"
@@ -100,8 +124,8 @@ resource "vsphere_virtual_machine" "no" {
     vsphere_tag.cluster.id,
   ]
 
-  # Alterações feitas pelo próprio OpenShift no ciclo de vida do nó não devem
-  # reaparecer como desvio no plano diário.
+  # Anotações que o Rancher escreve na máquina durante o registro do nó não
+  # devem reaparecer como desvio no plano diário.
   lifecycle {
     ignore_changes = [annotation, clone[0].template_uuid]
   }
@@ -109,12 +133,16 @@ resource "vsphere_virtual_machine" "no" {
 
 # Impede que o balanceamento do vSphere junte os nós no mesmo host físico, o que
 # anularia a dispersão topológica configurada no Kubernetes.
+#
+# Regra preferencial, não obrigatória. Obrigatória, ela impediria o vSphere HA
+# de reiniciar o nó em outro host quando sobram menos hosts que nós, e a
+# máquina ficaria desligada justamente durante a falha.
 resource "vsphere_compute_cluster_vm_anti_affinity_rule" "espalhar" {
   name                = "${local.nome_base}-anti-afinidade"
   compute_cluster_id  = data.vsphere_compute_cluster.alvo.id
   virtual_machine_ids = [for vm in vsphere_virtual_machine.no : vm.id]
   enabled             = true
-  mandatory           = var.ambiente == "prd"   # em produção, impede até em contingência
+  mandatory           = false
 }
 
 # Saída consumida pelo inventário dinâmico do Ansible, que aplica a linha de base.
@@ -123,7 +151,9 @@ output "inventario" {
     for nome, vm in vsphere_virtual_machine.no : nome => {
       ip   = vm.default_ip_address
       rack = local.distribuicao[nome].rack
-      # Vira o label topology.kubernetes.io/zone no nó do Kubernetes.
+      # Vira o rótulo topology.kubernetes.io/zone no nó do Kubernetes. Para o
+      # rótulo continuar verdadeiro depois de um vMotion, uma regra VM-Host
+      # preferencial mantém cada máquina no grupo de hosts do próprio rack.
       zona = "${var.sitio}-${local.distribuicao[nome].rack}"
     }
   }

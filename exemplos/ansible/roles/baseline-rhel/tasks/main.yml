@@ -1,5 +1,9 @@
 ---
-# Linha de base do sistema operacional, aplicada a toda máquina da plataforma.
+# Linha de base do sistema operacional, aplicada a toda máquina RHEL da
+# plataforma: nós do RKE2, bancos, Conjur, HAProxy e réplicas em DC2.
+#
+# NÃO se aplica a nó de OpenShift. Aquele nó roda RHCOS, sistema imutável que o
+# próprio cluster configura por MachineConfig (docs/06, camada 2).
 #
 # Regra deste papel: é idempotente, e isso é TESTADO. O pipeline roda o papel
 # duas vezes contra uma máquina descartável e falha se a segunda execução
@@ -49,7 +53,10 @@
     name: "{{ item }}"
     enabled: true
     state: started
-  loop: [chronyd, firewalld, auditd]
+  loop: "{{ ['chronyd', 'auditd'] + ([] if 'rke2' in group_names else ['firewalld']) }}"
+  # Nó de RKE2 roda sem firewalld, como o próprio RKE2 recomenda: ele conflita
+  # com as regras de rede que o Kubernetes escreve. Ali, a segmentação vem da
+  # NetworkPolicy dentro do cluster e do firewall de perímetro da VLAN.
 
 # ---------------------------------------------------------------------------
 # Acesso remoto
@@ -102,63 +109,84 @@
 # ---------------------------------------------------------------------------
 
 - name: Zona padrão restritiva
-  ansible.posix.firewalld:
-    zone: drop
-    state: present
-    permanent: true
+  # O módulo firewalld não define a zona padrão; o comando define. O
+  # changed_when mantém a tarefa idempotente para o teste de duas execuções.
+  ansible.builtin.command: firewall-cmd --set-default-zone=drop
+  register: zona_padrao
+  changed_when: "'ZONE_ALREADY_SET' not in zona_padrao.stderr"
+  when: "'rke2' not in group_names"
 
-- name: Portas liberadas conforme a função do nó
+- name: Portas liberadas conforme a função da máquina
+  when: "'rke2' not in group_names"
+  # Porta e origem juntas exigem regra rica: no módulo firewalld, os
+  # parâmetros port e source não podem ser usados na mesma tarefa.
   ansible.posix.firewalld:
-    port: "{{ item.porta }}/{{ item.protocolo }}"
-    source: "{{ item.origem }}"
-    zone: internal
+    rich_rule: >-
+      rule family=ipv4 source address={{ item.origem }}
+      port port={{ item.porta }} protocol={{ item.protocolo }} accept
+    zone: drop
     permanent: true
     immediate: true
     state: enabled
   loop: "{{ portas_por_funcao[funcao_do_no] }}"
 
 # ---------------------------------------------------------------------------
-# Preparação para nó de Kubernetes
+# Preparação para nó de Kubernetes — só nós do RKE2
 # ---------------------------------------------------------------------------
 
-- name: Swap desligado
-  ansible.builtin.mount:
-    path: swap
-    fstype: swap
-    state: absent
-  # O kubelet não lida bem com swap: ele decide desalojar com base em memória
-  # disponível, e swap mascara a pressão real até a máquina ficar inutilizável.
+- name: Preparação de nó do RKE2
+  when: "'rke2' in group_names"
+  block:
+    - name: Swap desligado agora
+      ansible.builtin.command: swapoff -a
+      when: ansible_swaptotal_mb > 0
 
-- name: Parâmetros de kernel para rede de contêiner
-  ansible.posix.sysctl:
-    name: "{{ item.nome }}"
-    value: "{{ item.valor }}"
-    sysctl_file: /etc/sysctl.d/90-kubernetes.conf
-    reload: true
-  loop:
-    - { nome: net.ipv4.ip_forward,                 valor: "1" }
-    - { nome: net.bridge.bridge-nf-call-iptables,  valor: "1" }
-    - { nome: net.ipv4.conf.all.rp_filter,         valor: "1" }
-    - { nome: fs.inotify.max_user_instances,       valor: "8192" }
-    - { nome: fs.inotify.max_user_watches,         valor: "524288" }
-    # Os dois últimos: o padrão do RHEL é baixo demais para um nó com muitos
-    # pods, e o sintoma é obscuro — o kubelet para de observar arquivos e os
-    # pods ficam presos em ContainerCreating sem erro claro.
+    - name: Swap fora do fstab
+      ansible.posix.mount:
+        path: none
+        fstype: swap
+        state: absent
+      # O kubelet não lida bem com swap: ele decide desalojar com base em
+      # memória disponível, e swap mascara a pressão real até a máquina ficar
+      # inutilizável.
 
-- name: Volume dedicado para o runtime de contêiner
-  ansible.builtin.filesystem:
-    fstype: xfs
-    dev: /dev/sdb
-  # Imagem e log de contêiner num volume separado. Sem isso, uma aplicação que
-  # registra demais enche a raiz e derruba o nó inteiro, não só a aplicação.
+    - name: Módulo br_netfilter carregado agora e na partida
+      community.general.modprobe:
+        name: br_netfilter
+        state: present
+        persistent: present
+      # Sem ele, o parâmetro bridge-nf-call-iptables abaixo nem existe.
 
-- name: Montagem do volume de contêineres
-  ansible.posix.mount:
-    path: /var/lib/containers
-    src: /dev/sdb
-    fstype: xfs
-    opts: defaults,noatime,pquota
-    state: mounted
+    - name: Parâmetros de kernel para rede de contêiner
+      ansible.posix.sysctl:
+        name: "{{ item.nome }}"
+        value: "{{ item.valor }}"
+        sysctl_file: /etc/sysctl.d/90-kubernetes.conf
+        reload: true
+      loop:
+        - { nome: net.ipv4.ip_forward,                 valor: "1" }
+        - { nome: net.bridge.bridge-nf-call-iptables,  valor: "1" }
+        - { nome: net.ipv4.conf.all.rp_filter,         valor: "1" }
+        - { nome: fs.inotify.max_user_instances,       valor: "8192" }
+        - { nome: fs.inotify.max_user_watches,         valor: "524288" }
+        # Os dois últimos: o padrão do RHEL é baixo demais para um nó com
+        # muitos pods, e o sintoma é obscuro — o kubelet para de observar
+        # arquivos e os pods ficam presos em ContainerCreating sem erro claro.
+
+    - name: Volume dedicado para o runtime de contêiner
+      community.general.filesystem:
+        fstype: xfs
+        dev: /dev/sdb
+      # Imagem e log de contêiner num volume separado. Sem isso, uma aplicação
+      # que registra demais enche a raiz e derruba o nó inteiro.
+
+    - name: Montagem do volume onde o RKE2 guarda imagens e contêineres
+      ansible.posix.mount:
+        path: /var/lib/rancher
+        src: /dev/sdb
+        fstype: xfs
+        opts: defaults,noatime,pquota
+        state: mounted
 
 # ---------------------------------------------------------------------------
 # Agentes

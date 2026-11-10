@@ -1,0 +1,23 @@
+# Handlers do papel de linha de base. Executados uma vez no fim, só quando
+# alguma tarefa avisou que mudou algo.
+
+- name: limpar cache dnf
+  ansible.builtin.command: dnf clean all
+  changed_when: true
+
+- name: reiniciar chronyd
+  ansible.builtin.systemd:
+    name: chronyd
+    state: restarted
+
+# Valida ANTES de recarregar. Um erro de digitação no arquivo de configuração,
+# recarregado sem validação, deixa a máquina inacessível por SSH.
+- name: validar e recarregar sshd
+  ansible.builtin.command: sshd -t
+  changed_when: false
+  notify: recarregar sshd
+
+- name: recarregar sshd
+  ansible.builtin.systemd:
+    name: sshd
+    state: reloaded
