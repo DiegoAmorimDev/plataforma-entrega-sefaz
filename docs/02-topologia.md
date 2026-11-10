@@ -37,32 +37,9 @@ Fora da tabela, em máquina virtual, ficam três grupos de peças:
   dedicadas, instaladas pelos instaladores oficiais de cada produto para máquina virtual. O Argo
   CD de contingência é a exceção: fica dentro de `prd-dc2`, desligado (ADR-009).
 
-```mermaid
-flowchart LR
-    subgraph DC1["Datacenter 1 — primário"]
-        PLAT["plat-dc1<br/>OpenShift<br/>esteira e observabilidade"]
-        DEV["dev-dc1<br/>RKE2 sob Rancher<br/>desenvolvimento"]
-        HML["hml-dc1<br/>OpenShift<br/>homologação"]
-        PRD1["prd-dc1<br/>OpenShift<br/>produção ativa"]
-    end
+**Figura 2.1 — Topologia física dos dois datacenters.**
 
-    subgraph DC2["Datacenter 2 — secundário"]
-        PRD2["prd-dc2<br/>OpenShift<br/>produção, com Argo CD<br/>de contingência desligado"]
-        REP["Em máquina virtual<br/>Harbor réplica · GitLab secundário<br/>MinIO espelhado"]
-    end
-
-    PLAT -->|Argo CD| DEV
-    PLAT -->|Argo CD| HML
-    PLAT -->|Argo CD| PRD1
-    PLAT -->|Argo CD| PRD2
-    PLAT -.->|replicação contínua| REP
-    REP -.->|pull de imagem| PRD2
-
-    classDef p fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
-    classDef e fill:#1f4a3d,stroke:#7fc8ab,color:#eafaf3
-    class PLAT,REP p
-    class DEV,HML,PRD1,PRD2 e
-```
+![Topologia física: zonas de borda, plataforma, desenvolvimento, homologação, produção e banco em cada datacenter, com a quantidade de nós de controle e de trabalho de cada cluster](diagramas/topologia.drawio.svg)
 
 ---
 

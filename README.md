@@ -8,6 +8,13 @@ O documento responde aos oito tópicos do desafio. O diretório `exemplos/` traz
 sustentam o desenho — pipeline, manifestos GitOps, módulo de infraestrutura, regras de alerta e
 política de admissão — em arquivos que podem ser lidos e criticados linha a linha.
 
+**Figura 1.1 — Panorama da plataforma.**
+
+![Panorama da plataforma: o cluster de plataforma e os clusters de execução em DC1, a produção e as réplicas em DC2, a borda, a zona de banco e a vigilância externa](docs/diagramas/panorama.drawio.svg)
+
+A topologia física, com a quantidade de nós de cada cluster, está na Figura 2.1, em
+[docs/02](docs/02-topologia.md).
+
 ---
 
 ## A proposta em uma página
@@ -54,6 +61,31 @@ e volta para o legado invertendo essa regra. Nenhuma onda depende da anterior te
 As decisões que admitem alternativa defensável estão registradas em
 [docs/adr/](docs/adr/), uma por arquivo, com o contexto, a alternativa descartada e o
 critério que mudaria a escolha. São doze.
+
+## Como ler os diagramas
+
+As doze figuras seguem uma convenção só. A cor diz a qual plano a peça pertence; o traço e a forma
+dizem o estado dela. Cada figura tem número e título acima, numerada pelo documento onde está.
+
+| Cor | Plano | Exemplos |
+|---|---|---|
+| Azul | Entrega | GitLab, executores, Harbor, Argo CD |
+| Verde | Execução | Clusters e aplicações |
+| Âmbar | Dados e segredos | Oracle, PostgreSQL, Conjur, MinIO |
+| Magenta | Observação | Prometheus, Grafana, Thanos, Loki, Tempo |
+| Laranja | Tráfego | DNS público, firewall, HAProxy |
+| Cinza | Fora dos planos da plataforma | Pessoas, legado, serviços externos |
+
+| Sinal | Significado |
+|---|---|
+| Linha cheia | Fluxo principal |
+| Linha tracejada | Replicação, contingência ou caminho assíncrono |
+| Borda tracejada | Componente em espera ou desligado |
+| Trapézio | Passo que exige decisão humana |
+
+Os fluxos estão em Mermaid, dentro do próprio texto, para que cada mudança apareça no diff do
+merge request. O panorama e a topologia estão em draw.io, em [docs/diagramas/](docs/diagramas/): o
+arquivo `.drawio.svg` é a imagem e a fonte editável ao mesmo tempo, e abre direto no draw.io.
 
 ## Onde o desenho se apoia em operação real
 

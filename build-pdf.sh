@@ -56,8 +56,19 @@ h = h.replace(
       .replace(/&gt;/g, ">")
       .replace(/&amp;/g, "&")}</pre>`
 );
+// As figuras do draw.io entram embutidas, para o HTML não depender de caminho
+// relativo: o README aponta para docs/diagramas/ e os documentos, para diagramas/.
+let figuras = 0;
+h = h.replace(/<img src="([^"]+\.drawio\.svg)"/g, (_, src) => {
+  const caminho = [src, "docs/" + src].find((c) => fs.existsSync(c));
+  if (!caminho) throw new Error("figura não encontrada: " + src);
+  figuras++;
+  const dados = fs.readFileSync(caminho).toString("base64");
+  return `<img class="figura" src="data:image/svg+xml;base64,${dados}"`;
+});
 fs.writeFileSync(p, h);
 console.log("diagramas preparados:", (h.match(/class="mermaid"/g) || []).length);
+console.log("figuras embutidas:", figuras);
 '
 
 echo "pronto: dist/proposta.html"

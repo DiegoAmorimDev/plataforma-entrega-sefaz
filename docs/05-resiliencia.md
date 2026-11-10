@@ -130,25 +130,35 @@ restaurado é suposição, não garantia.
 
 O cenário de perda total de DC1 é o que define o plano de continuidade. A sequência é esta:
 
+**Figura 5.1 — A sequência na perda total de DC1.**
+
 ```mermaid
 flowchart TD
-    E["DC1 indisponível"] --> D1["Vigilância externa em DC2<br/>aciona o plantão"]
+    E["DC1 indisponível"] --> D1["Vigilância externa e Alertmanager<br/>de DC2 acionam o plantão"]
     E --> N1["Nível 1 já em execução em prd-dc2<br/>leitura atende, escrita aguarda o banco"]
-    D1 --> DEC["Decisão de ativação do plano<br/>coordenador de plantão, até 10 min"]
-    DEC --> DNS["DNS público aponta para<br/>o par HAProxy de DC2"]
-    DEC --> DB["Troca de papel do banco<br/>Data Guard e Patroni para DC2"]
-    DB --> N2["Escala nível 2 em prd-dc2<br/>réplicas de zero para o valor normal"]
-    N2 --> GL["GitLab secundário promovido<br/>Argo CD de contingência ativado<br/>Conjur promovido em DC2"]
-    GL --> N3["Nível 3 restaurado por backup"]
+    D1 --> DEC[/"Decisão de ativação do plano<br/>coordenador de plantão, até 10 min"\]
+    DEC --> DNS[/"DNS público aponta para<br/>o par HAProxy de DC2"\]
+    DEC --> DB[/"Troca de papel do banco<br/>Data Guard e Patroni para DC2"\]
+    DB --> N2[/"Escala nível 2 em prd-dc2<br/>réplicas de zero para o valor normal"\]
+    N2 --> GL[/"GitLab secundário promovido<br/>Argo CD de contingência ativado<br/>Conjur promovido em DC2"\]
+    GL --> N3[/"Nível 3 restaurado por backup"\]
 
-    classDef auto fill:#1f4a3d,stroke:#7fc8ab,color:#eafaf3
-    classDef manual fill:#4a3a1f,stroke:#d8b86a,color:#faf3e6
-    class D1,N1 auto
-    class DEC,DNS,DB,N2,GL,N3 manual
+    classDef neutro fill:#F3F4F6,stroke:#6B7280,color:#1F2937
+    classDef observacao fill:#F6E8F1,stroke:#B05A8C,color:#1F2937
+    classDef execucao fill:#E3F4EE,stroke:#009E73,color:#1F2937
+    classDef trafego fill:#FBE7DC,stroke:#D55E00,color:#1F2937
+    classDef dados fill:#FDF3DF,stroke:#B87D00,color:#1F2937
+    classDef entrega fill:#E6F0FA,stroke:#0072B2,color:#1F2937
+    class E,DEC neutro
+    class D1 observacao
+    class N1,N2 execucao
+    class DNS trafego
+    class DB,N3 dados
+    class GL entrega
 ```
 
-O que é automático está em verde e acontece em segundos. O que exige decisão humana está em âmbar,
-porque a troca de papel do banco é irreversível na prática: voltar para DC1 depois exige
+Os passos em retângulo são automáticos e acontecem em segundos. Os em trapézio exigem decisão
+humana, porque a troca de papel do banco é irreversível na prática: voltar para DC1 depois exige
 ressincronizar no sentido contrário. Automatizar essa decisão transforma uma oscilação de rede de
 dois minutos num dia de trabalho de reconstrução.
 

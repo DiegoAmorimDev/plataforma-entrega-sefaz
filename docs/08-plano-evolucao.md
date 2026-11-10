@@ -11,9 +11,10 @@ observabilidade útil sem padrão de telemetria, nem migrar com segurança sem s
 
 ## Visão das fases
 
+**Figura 8.1 — Doze meses de implantação, em cinco fases.**
+
 ```mermaid
 gantt
-    title Doze meses de implantação
     dateFormat YYYY-MM-DD
     axisFormat %m/%y
 

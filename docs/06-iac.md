@@ -11,6 +11,8 @@ telemetria no MinIO. Esses dependem de backup e restauração, não de reconstru
 
 ## As quatro camadas e as ferramentas de cada uma
 
+**Figura 6.1 — As quatro camadas de infraestrutura como código.**
+
 ```mermaid
 flowchart TB
     subgraph L4["Configuração das ferramentas"]
@@ -28,8 +30,12 @@ flowchart TB
 
     L1 --> L2 --> L3 --> L4
 
-    classDef c fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
-    class T1,T2,T3,T4 c
+    classDef entrega fill:#E6F0FA,stroke:#0072B2,color:#1F2937
+    class T1,T2,T3,T4 entrega
+    style L4 fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
+    style L3 fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
+    style L2 fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
+    style L1 fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
 ```
 
 A ordem importa. Cada camada só pode ser aplicada depois que a de baixo converge, e o pipeline
@@ -155,18 +161,22 @@ vCenter de produção, e a credencial para isso só existe dentro do pipeline.
 
 O fluxo é o mesmo para todas as camadas:
 
+**Figura 6.2 — O caminho de uma mudança de infraestrutura.**
+
 ```mermaid
 flowchart LR
     MR["Merge request"] --> VAL["Validação<br/>fmt · validate · tflint · checkov"]
     VAL --> PLAN["Plano gerado<br/>comentado no merge request"]
-    PLAN --> REV["Revisão humana<br/>lê o plano, não só o diff"]
-    REV --> APV["Aprovação<br/>uma ou duas, conforme o repo"]
+    PLAN --> REV[/"Revisão humana<br/>lê o plano, não só o diff"\]
+    REV --> APV[/"Aprovação<br/>uma ou duas, conforme o repo"\]
     APV --> APL["Aplicação a partir de main<br/>runner dedicado"]
     APL --> DRIFT["Verificação diária de desvio"]
     DRIFT -.->|desvio encontrado| ALERTA["Chamado para a plataforma"]
 
-    classDef a fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
-    class VAL,PLAN,APL,DRIFT a
+    classDef entrega fill:#E6F0FA,stroke:#0072B2,color:#1F2937
+    classDef neutro fill:#F3F4F6,stroke:#6B7280,color:#1F2937
+    class MR,VAL,PLAN,REV,APV,APL,DRIFT entrega
+    class ALERTA neutro
 ```
 
 Três detalhes fazem esse fluxo funcionar de verdade.

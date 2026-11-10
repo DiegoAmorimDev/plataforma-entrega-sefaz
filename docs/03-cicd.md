@@ -11,6 +11,8 @@ partir do conteúdo. Ele é o fio que garante que o que foi testado é o que exe
 
 ## O caminho do commit até produção
 
+**Figura 3.1 — Do commit à produção.**
+
 ```mermaid
 flowchart TD
     C["Commit em branch<br/>de funcionalidade"] --> MR["Merge request aberto"]
@@ -26,7 +28,7 @@ flowchart TD
     end
 
     MR --> V0
-    V4 --> REV["Revisão humana<br/>CODEOWNERS"]
+    V4 --> REV[/"Revisão humana<br/>CODEOWNERS"\]
     REV --> MAIN["Merge em main"]
 
     subgraph PMAIN["Pipeline de main"]
@@ -49,19 +51,19 @@ flowchart TD
     AH --> T2["Teste ponta a ponta · carga<br/>varredura dinâmica"]
 
     T2 -->|aprovado e 24 h estável| PP["Merge request de promoção<br/>overlay de produção"]
-    PP --> APR["Aprovação de duas pessoas<br/>janela de mudança"]
+    PP --> APR[/"Aprovação de duas pessoas<br/>janela de mudança"\]
     APR --> AP["Argo CD sincroniza<br/>prd-dc1 e prd-dc2"]
     AP --> CAN["Nível 1: canário 10 por cento<br/>por 15 minutos"]
     CAN --> FULL["Promoção total"]
 
     CAN -.->|erro acima do limiar| RB["Retorno automático"]
 
-    classDef ci fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
-    classDef gitops fill:#1f4a3d,stroke:#7fc8ab,color:#eafaf3
-    classDef risco fill:#4a1f2e,stroke:#d98fa6,color:#fae9ef
-    class V0,V1,V2,V3,V4,Q,B,SC,PUB,BUMP ci
-    class AD,AH,AP,CAN,FULL gitops
-    class RB risco
+    classDef entrega fill:#E6F0FA,stroke:#0072B2,color:#1F2937
+    classDef execucao fill:#E3F4EE,stroke:#009E73,color:#1F2937
+    class C,MR,V0,V1,V2,V3,V4,REV,MAIN,Q,B,SC,PUB,BUMP,PH,PP,APR entrega
+    class AD,T1,AH,T2,AP,CAN,FULL,RB execucao
+    style PMR fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
+    style PMAIN fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
 ```
 
 O pipeline completo está em [`exemplos/ci/.gitlab-ci.yml`](../exemplos/ci/.gitlab-ci.yml), e os

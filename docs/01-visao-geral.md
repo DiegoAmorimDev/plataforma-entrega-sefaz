@@ -17,85 +17,9 @@ e um agente dentro do cluster converge a realidade para esse estado.
 
 ## O desenho
 
-```mermaid
-flowchart TB
-    subgraph DEV["Times de desenvolvimento"]
-        D1["12 times<br/>60 aplicações"]
-    end
+**Figura 1.1 — Panorama da plataforma.**
 
-    subgraph PLAT["Cluster de plataforma — DC1"]
-        GL["GitLab<br/>código, merge request, catálogo"]
-        RUN["GitLab Runners<br/>executores efêmeros"]
-        SQ["SonarQube<br/>quality gate"]
-        HB["Harbor<br/>registry, varredura, assinatura"]
-        ARGO["Argo CD<br/>agente GitOps de vários clusters"]
-        OBS["Grafana · Thanos · Loki · Tempo<br/>painel único"]
-        MINIO["MinIO<br/>armazenamento de objetos"]
-    end
-
-    subgraph EXEC["Planos de execução"]
-        KDEV["RKE2 sob Rancher<br/>desenvolvimento"]
-        KHML["OpenShift<br/>homologação"]
-        KPRD1["OpenShift<br/>produção DC1"]
-        KPRD2["OpenShift<br/>produção DC2"]
-    end
-
-    subgraph DADOS["Dados e segredos — fora do Kubernetes"]
-        ORA["Oracle<br/>Data Guard DC1 para DC2"]
-        PG["PostgreSQL<br/>Patroni e PgBouncer"]
-        CONJ["Conjur<br/>cofre, rotação pelo PAM"]
-    end
-
-    subgraph BORDA["Entrada de tráfego"]
-        FW["Firewall e WAF"]
-        HAP["HAProxy<br/>um par por sítio, VIP"]
-        APA["Apache<br/>proxy reverso do legado"]
-        LEG["Aplicações em VM<br/>ainda não migradas"]
-    end
-
-    D1 -->|git push| GL
-    GL --> RUN
-    RUN --> SQ
-    RUN -->|imagem assinada| HB
-    RUN -->|digest novo no manifesto| GL
-
-    GL -->|manifestos| ARGO
-    ARGO --> KDEV
-    ARGO --> KHML
-    ARGO --> KPRD1
-    ARGO --> KPRD2
-
-    HB -.->|pull| KPRD1
-    HB -.->|pull| KPRD2
-    CONJ -.->|External Secrets| KPRD1
-    CONJ -.->|External Secrets| KPRD2
-    CONJ -.->|token de identidade do job| RUN
-
-    KPRD1 --> ORA
-    KPRD1 --> PG
-    KPRD2 --> ORA
-
-    KDEV -.->|métricas, logs, traces| OBS
-    KHML -.-> OBS
-    KPRD1 -.-> OBS
-    KPRD2 -.-> OBS
-    OBS --> MINIO
-
-    FW --> HAP
-    HAP -->|rota migrada| KPRD1
-    HAP -->|rota migrada| KPRD2
-    HAP -->|rota legada| APA
-    APA --> LEG
-
-    classDef plat fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
-    classDef exec fill:#1f4a3d,stroke:#7fc8ab,color:#eafaf3
-    classDef dados fill:#4a3a1f,stroke:#d8b86a,color:#faf3e6
-    classDef borda fill:#4a1f2e,stroke:#d98fa6,color:#fae9ef
-    class GL,RUN,SQ,HB,ARGO,OBS,MINIO plat
-    class KDEV,KHML,KPRD1,KPRD2 exec
-    class ORA,PG,CONJ dados
-    class FW,HAP,APA,LEG borda
-```
+![Panorama da plataforma: o cluster de plataforma e os clusters de execução em DC1, a produção e as réplicas em DC2, a borda, a zona de banco e a vigilância externa](diagramas/panorama.drawio.svg)
 
 ---
 
@@ -195,15 +119,25 @@ migrada aponta para o cluster, e inverter a aponta de volta para o Apache. O arq
 
 ## O caminho de um pedido em produção
 
+**Figura 1.2 — O caminho de um pedido em produção.**
+
 ```mermaid
 sequenceDiagram
     participant U as Servidor ou cidadão
-    participant F as Firewall e WAF
-    participant H as HAProxy
-    participant R as Router OpenShift
-    participant P as Pod da aplicação
-    participant B as Oracle ou PostgreSQL
-    participant O as Coletor OpenTelemetry
+    box rgb(251,231,220) Tráfego
+        participant F as Firewall e WAF
+        participant H as HAProxy
+    end
+    box rgb(227,244,238) Execução
+        participant R as Router OpenShift
+        participant P as Pod da aplicação
+    end
+    box rgb(253,243,223) Dados e segredos
+        participant B as Oracle ou PostgreSQL
+    end
+    box rgb(246,232,241) Observação
+        participant O as Coletor OpenTelemetry
+    end
 
     U->>F: HTTPS
     F->>H: tráfego inspecionado

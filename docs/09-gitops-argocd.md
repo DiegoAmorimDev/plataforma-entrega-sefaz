@@ -13,6 +13,8 @@ dá a uma porta assim.
 
 ## Os repositórios e quem escreve em cada um
 
+**Figura 9.1 — Os repositórios e quem escreve em cada um.**
+
 ```mermaid
 flowchart LR
     subgraph TIMES["Times de desenvolvimento"]
@@ -36,10 +38,12 @@ flowchart LR
     ADD --> ARGO
     ARGO -->|converge| CL
 
-    classDef rep fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
-    classDef ag fill:#1f4a3d,stroke:#7fc8ab,color:#eafaf3
-    class CAT,MAN,ADD,COD rep
-    class ARGO,CL,PIPE ag
+    classDef entrega fill:#E6F0FA,stroke:#0072B2,color:#1F2937
+    classDef execucao fill:#E3F4EE,stroke:#009E73,color:#1F2937
+    class COD,CAT,MAN,ADD,PIPE,ARGO entrega
+    class CL execucao
+    style TIMES fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
+    style PLATG fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
 ```
 
 | Repositório | Conteúdo | Quem escreve | Quem aprova |
@@ -193,14 +197,20 @@ Uma sincronização aplica dezenas de objetos. A ordem importa, e o Argo CD a co
 segredo existir e fica em erro de configuração; a versão nova sobe antes da migração e roda contra
 o esquema velho; e ninguém confirma que a versão nova responde antes de declarar a entrega pronta.
 
+**Figura 9.2 — A ordem de uma sincronização em produção.**
+
 ```mermaid
 sequenceDiagram
-    participant G as Git · overlay prd
-    participant A as Argo CD
-    participant E as ExternalSecret
-    participant M as Job de migração
-    participant D as Rollout da aplicação
-    participant F as Teste de fumaça
+    box rgb(230,240,250) Entrega
+        participant G as Git · overlay prd
+        participant A as Argo CD
+    end
+    box rgb(227,244,238) Execução
+        participant E as ExternalSecret
+        participant M as Job de migração
+        participant D as Rollout da aplicação
+        participant F as Teste de fumaça
+    end
 
     G->>A: digest novo no overlay
     A->>E: onda -2 · referência ao segredo e ConfigMap
@@ -344,6 +354,8 @@ por dois motivos: está em fase beta, e desliga a sincronização automática de
 quatro clusters de execução. Uma instância de contingência fica instalada e desligada em `prd-dc2`
 (ADR-009).
 
+**Figura 9.3 — Argo CD central em DC1 e contingência desligada em DC2.**
+
 ```mermaid
 flowchart LR
     subgraph DC1["Datacenter 1"]
@@ -365,10 +377,14 @@ flowchart LR
     AR -.->|ativado na perda de DC1| P2
     GL2 -.->|manifestos| AR
 
-    classDef ativo fill:#1f4a3d,stroke:#7fc8ab,color:#eafaf3
-    classDef espera fill:#4a3a1f,stroke:#d8b86a,color:#faf3e6
-    class AC,DEV,HML,P1,P2 ativo
-    class AR,GL2 espera
+    classDef entrega fill:#E6F0FA,stroke:#0072B2,color:#1F2937
+    classDef execucao fill:#E3F4EE,stroke:#009E73,color:#1F2937
+    classDef entregaespera fill:#E6F0FA,stroke:#0072B2,color:#1F2937,stroke-dasharray:6 4
+    class AC entrega
+    class DEV,HML,P1,P2 execucao
+    class AR,GL2 entregaespera
+    style DC1 fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
+    style DC2 fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
 ```
 
 **Como escala.** São 240 `Applications` mais os componentes de plataforma. O controlador de

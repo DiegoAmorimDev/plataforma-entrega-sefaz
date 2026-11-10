@@ -13,6 +13,8 @@ Prometheus de cada cluster a busca na aplicação.
 
 ## Como os sinais fluem
 
+**Figura 4.1 — Como os sinais saem da aplicação e chegam ao plantão.**
+
 ```mermaid
 flowchart LR
     APP["Aplicação<br/>agente Java OpenTelemetry"]
@@ -48,12 +50,14 @@ flowchart LR
     AM -->|severidade de aviso| SD
     AM -.->|sinal de vida a cada minuto| VIG
 
-    classDef col fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
-    classDef arm fill:#1f4a3d,stroke:#7fc8ab,color:#eafaf3
-    classDef saida fill:#4a1f2e,stroke:#d98fa6,color:#fae9ef
-    class NODE,GW,PROM col
-    class THA,LOKI,TEMPO,MINIO arm
-    class AM,ZAP,SD,VIG saida
+    classDef execucao fill:#E3F4EE,stroke:#009E73,color:#1F2937
+    classDef observacao fill:#F6E8F1,stroke:#B05A8C,color:#1F2937
+    classDef dados fill:#FDF3DF,stroke:#B87D00,color:#1F2937
+    classDef neutro fill:#F3F4F6,stroke:#6B7280,color:#1F2937
+    class APP execucao
+    class NODE,GW,PROM,AM,THA,LOKI,TEMPO,GRAF,VIG observacao
+    class MINIO dados
+    class ZAP,SD neutro
 ```
 
 **A regra de alerta roda no cluster onde a aplicação está.** O Prometheus de cada cluster de
