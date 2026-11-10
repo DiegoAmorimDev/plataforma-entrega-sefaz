@@ -9,6 +9,19 @@
 #   - a curta confirma que ele ainda está acontecendo agora.
 # Só a longa demora a detectar queda total. Só a curta dispara com qualquer
 # soluço de 30 segundos. Exigir as duas dá detecção rápida sem ruído.
+#
+# Onde roda: no Prometheus do PRÓPRIO cluster de execução (no OpenShift, o
+# monitoramento de cargas do usuário avalia o PrometheusRule do namespace). A
+# regra não depende de plat-dc1: prd-dc2 continua alertando na perda de DC1.
+#
+# De onde vem a métrica: o Prometheus raspa o pod da aplicação. O agente Java
+# do OpenTelemetry expõe as métricas no formato do Prometheus, e o PodMonitor
+# do chart base diz ao Prometheus onde buscar. Como cada namespace contém uma
+# aplicação em um ambiente, o filtro por namespace basta para isolar a
+# aplicação.
+#
+# Este arquivo é gerado pelo catálogo a partir do SLO declarado. O rótulo
+# "time" vem da ficha do catálogo e é o que o Alertmanager usa para rotear.
 
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -29,20 +42,28 @@ spec:
       rules:
         - record: sefaz:erro_ratio:5m
           expr: |
-            sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor",http_response_status_code=~"5.."}[5m]))
-            / sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor"}[5m]))
+            sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd",http_response_status_code=~"5.."}[5m]))
+            / sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd"}[5m]))
         - record: sefaz:erro_ratio:30m
           expr: |
-            sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor",http_response_status_code=~"5.."}[30m]))
-            / sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor"}[30m]))
+            sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd",http_response_status_code=~"5.."}[30m]))
+            / sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd"}[30m]))
         - record: sefaz:erro_ratio:1h
           expr: |
-            sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor",http_response_status_code=~"5.."}[1h]))
-            / sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor"}[1h]))
+            sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd",http_response_status_code=~"5.."}[1h]))
+            / sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd"}[1h]))
+        - record: sefaz:erro_ratio:2h
+          expr: |
+            sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd",http_response_status_code=~"5.."}[2h]))
+            / sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd"}[2h]))
         - record: sefaz:erro_ratio:6h
           expr: |
-            sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor",http_response_status_code=~"5.."}[6h]))
-            / sum(rate(http_server_request_duration_seconds_count{job="nfe-emissor"}[6h]))
+            sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd",http_response_status_code=~"5.."}[6h]))
+            / sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd"}[6h]))
+        - record: sefaz:erro_ratio:1d
+          expr: |
+            sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd",http_response_status_code=~"5.."}[1d]))
+            / sum(rate(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd"}[1d]))
 
     - name: nfe-emissor.slo.alertas
       rules:
@@ -59,7 +80,7 @@ spec:
           labels:
             severity: critical
             tier: "1"
-            team: fiscal
+            time: fiscal
           annotations:
             summary: "nfe-emissor consome orçamento de erro 14x acima do normal"
             description: >-
@@ -80,25 +101,59 @@ spec:
           labels:
             severity: critical
             tier: "1"
-            team: fiscal
+            time: fiscal
           annotations:
             summary: "nfe-emissor em degradação sustentada há 6 horas"
             description: "Taxa de erro de {{ $value | humanizePercentage }}."
             runbook_url: "https://wiki.sefaz.interno/runbooks/nfe-emissor/erro-5xx"
 
         # ---------------------------------------------------------------
-        # CHAMADO — 3x. Horário comercial resolve.
+        # CHAMADO — 3x. Horário comercial resolve. Também com duas janelas.
         # ---------------------------------------------------------------
         - alert: OrcamentoErroQueimaLenta
-          expr: sefaz:erro_ratio:6h > (3 * 0.001)
+          expr: |
+            sefaz:erro_ratio:1d > (3 * 0.001)
+            and
+            sefaz:erro_ratio:2h > (3 * 0.001)
           for: 1h
           labels:
             severity: warning
-            team: fiscal
+            time: fiscal
           annotations:
             summary: "nfe-emissor consumindo orçamento acima do previsto"
             runbook_url: "https://wiki.sefaz.interno/runbooks/nfe-emissor/erro-5xx"
 
+        # ---------------------------------------------------------------
+        # A métrica sumiu. Sem esta regra, uma aplicação que parou de expor
+        # métrica tem taxa de erro "nenhuma" e nunca alerta: o silêncio
+        # parece saúde.
+        # ---------------------------------------------------------------
+        - alert: MetricaDaAplicacaoAusente
+          expr: |
+            absent_over_time(http_server_request_duration_seconds_count{namespace="fiscal-nfe-emissor-prd"}[15m])
+          for: 5m
+          labels:
+            severity: critical
+            tier: "1"
+            time: fiscal
+          annotations:
+            summary: "nfe-emissor parou de expor métrica há 20 minutos"
+            runbook_url: "https://wiki.sefaz.interno/runbooks/nfe-emissor/metrica-ausente"
+---
+# Regras da plataforma, num objeto próprio, no Prometheus de plataforma do
+# cluster. Elas usam métrica de nó e de todos os namespaces, que o
+# monitoramento de cargas do usuário não enxerga a partir do namespace de uma
+# aplicação. Uma cópia por cluster, e não uma por aplicação: o sinal de vida
+# dentro de cada PrometheusRule de aplicação seria enviado 60 vezes.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: plataforma
+  namespace: openshift-monitoring
+  labels:
+    sefaz.io/time: plataforma
+spec:
+  groups:
     # -----------------------------------------------------------------------
     # Capacidade: alerta por PREVISÃO, não por percentual atual.
     #
@@ -113,23 +168,24 @@ spec:
           for: 15m
           labels:
             severity: critical
-            team: plataforma
+            time: plataforma
           annotations:
             summary: "{{ $labels.instance }}: /var/lib/containers enche em menos de 4 horas"
             runbook_url: "https://wiki.sefaz.interno/runbooks/plataforma/disco-cheio"
 
         - alert: CertificadoVencendo
-          expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 21
+          expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 30
           for: 1h
           labels:
             severity: warning
-            team: plataforma
+            time: plataforma
           annotations:
             summary: "Certificado de {{ $labels.instance }} vence em {{ $value | humanize }} dias"
             runbook_url: "https://wiki.sefaz.interno/runbooks/plataforma/renovar-certificado"
 
         # Memória contra o limite, não contra o nó. É o que antecipa o
-        # OOMKilled, que de outra forma aparece como reinício sem causa visível.
+        # encerramento por falta de memória, que de outra forma aparece como
+        # reinício sem causa visível.
         - alert: PodProximoDoLimiteDeMemoria
           expr: |
             container_memory_working_set_bytes{container!=""}
@@ -141,3 +197,19 @@ spec:
           annotations:
             summary: "{{ $labels.namespace }}/{{ $labels.pod }} em 90% do limite de memória"
             description: "O contêiner será encerrado por falta de memória se continuar."
+
+    # -----------------------------------------------------------------------
+    # Sinal de vida. Dispara SEMPRE. O Alertmanager o envia a cada minuto para
+    # um serviço de vigilância fora dos dois datacenters. Se o sinal parar de
+    # chegar, é porque a cadeia de alerta caiu, e a vigilância aciona o plantão
+    # da plataforma por conta própria (docs/05).
+    # -----------------------------------------------------------------------
+    - name: plataforma.sinal-de-vida
+      rules:
+        - alert: SinalDeVida
+          expr: vector(1)
+          labels:
+            severity: none
+            time: plataforma
+          annotations:
+            summary: "A cadeia de alerta deste cluster está funcionando"
