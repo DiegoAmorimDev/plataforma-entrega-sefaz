@@ -13,7 +13,7 @@ aplicação roda, quanta redundância recebe e qual compromisso de retomada a pl
 
 | Nível | Exemplo | Tempo máximo de retomada | Perda máxima de dado | Desenho |
 |---|---|---|---|---|
-| 1 | Emissão de documento fiscal, arrecadação | 15 minutos | 1 minuto | Ativo nos dois sítios, banco com replicação síncrona no sítio e assíncrona entre sítios |
+| 1 | Emissão de documento fiscal, arrecadação | 15 minutos, dos quais até 10 são a decisão humana de trocar o banco de sítio | 1 minuto | Aplicação ativa nos dois sítios, banco com replicação síncrona no sítio e assíncrona entre sítios |
 | 2 | Portal do contribuinte, consulta de débito | 1 hora | 5 minutos | Ativo em DC1, espera quente em DC2 |
 | 3 | Painel interno, relatório gerencial | 8 horas | 1 hora | Ativo em DC1, restauração em DC2 por backup |
 | 4 | Ferramenta administrativa, ambiente interno | 48 horas | 24 horas | Sítio único, backup diário |
@@ -37,7 +37,7 @@ O que a plataforma faz para isso ser transparente:
 - **Sonda de prontidão separada da sonda de vitalidade.** A de prontidão tira o pod do balanceamento
   quando ele não consegue atender; a de vitalidade reinicia quando ele travou. Usar a mesma
   verificação para as duas causa reinício em cascata quando o banco fica lento.
-- **Encerramento gracioso** com `preStop` de cinco segundos, para o pod sair do balanceamento antes
+- **Encerramento gracioso** com `preStop` de oito segundos, para o pod sair do balanceamento antes
   de parar de aceitar conexão.
 - **Requisição e limite declarados**, aplicados por `LimitRange`. Pod sem requisição faz o
   escalonador tomar decisão errada e é causa frequente de desalojamento em cascata.
@@ -48,8 +48,8 @@ padrão, em [`exemplos/helm/app-base/templates/`](../exemplos/helm/app-base/temp
 
 **Nó de controle** é caso diferente. São três, e o etcd mantém quórum com dois. Perder um não afeta
 nada em execução; perder dois congela o plano de controle, e as aplicações continuam servindo
-tráfego enquanto ninguém precisar alterar nada. Essa distinção é importante: cluster sem plano de
-controle ainda atende, só não muda.
+tráfego enquanto ninguém precisar alterar nada. Cluster sem plano de controle ainda atende; só não
+muda.
 
 ---
 
@@ -66,14 +66,15 @@ segundos. Nenhuma pessoa decide isso.
 
 Para aplicação de nível 2, a carga está declarada nos dois clusters, mas em `prd-dc2` com réplicas
 em zero. Ativar é alterar um valor no overlay e aguardar a sincronização. A operação é de minutos,
-exige decisão humana e está descrita em runbook.
+exige decisão humana e está descrita em roteiro de resposta.
 
 O ponto que costuma ser esquecido: **quando `prd-dc1` cai, o cluster de plataforma cai junto**,
 porque está no mesmo sítio. Argo CD, Harbor e observabilidade ficam indisponíveis. Daí a replicação
 contínua do Harbor para DC2, que permite ao `prd-dc2` continuar puxando imagem, e o GitLab
-secundário em DC2, que preserva o repositório de manifestos. Reconstruir o Argo CD em DC2 a partir
-do Git leva cerca de trinta minutos, e isso está dentro do compromisso de nível 2, não de nível 1.
-Por isso o nível 1 roda ativo nos dois sítios: ele não pode depender dessa reconstrução.
+secundário em DC2, que preserva o repositório de manifestos. O Argo CD de contingência, instalado e
+desligado em `prd-dc2`, é ativado escalando os componentes, em poucos minutos (ADR-009). Isso cabe
+no compromisso de nível 2, não no de nível 1. Por isso o nível 1 roda ativo nos dois sítios: ele
+não pode depender de nenhuma ativação.
 
 ---
 
@@ -82,14 +83,33 @@ Por isso o nível 1 roda ativo nos dois sítios: ele não pode depender dessa re
 Aqui está o tempo de retomada real da maioria das aplicações. A aplicação sobe em segundos; o banco
 decide o número.
 
-**Oracle** usa Data Guard, com instância principal em DC1 e instância em espera em DC2. A
-replicação é síncrona dentro do sítio, quando há mais de uma instância, e assíncrona entre sítios,
-pelo custo de latência. A troca de papel é manual por padrão, com Fast-Start Failover habilitado
-apenas para os bancos de nível 1, onde o automatismo compensa o risco de troca indevida.
+**A regra é uma só para os dois bancos: dentro do sítio, a troca de papel é automática; entre
+sítios, é sempre decisão humana.** Dentro de DC1, as duas instâncias se enxergam pela mesma rede, e
+o automatismo resolve em segundos a perda de uma máquina. Entre sítios, o automatismo não consegue
+distinguir "DC1 caiu" de "o enlace caiu e DC1 continua escrevendo". Na segunda situação, promover
+DC2 cria dois bancos principais com dado fiscal divergente, o pior desfecho possível desta
+plataforma.
 
-**PostgreSQL** usa Patroni sobre três instâncias, com réplica síncrona em DC1 e réplica assíncrona
-em DC2. O Patroni promove automaticamente em caso de perda da principal, e o PgBouncer redireciona
-as conexões. A promoção típica leva menos de trinta segundos.
+**Oracle** usa Data Guard. Os bancos de nível 1 têm duas instâncias em DC1, com replicação
+síncrona e Fast-Start Failover entre elas, e uma instância em espera em DC2, com replicação
+assíncrona, pelo custo de latência. O observador do Fast-Start Failover fica em DC1 e só arbitra a
+troca dentro do sítio. Os demais bancos têm uma instância em DC1 e a espera em DC2.
+
+A aplicação conecta pelo nome de um serviço que só existe na instância que está como principal,
+com os endereços dos dois sítios na mesma URL de conexão. Depois de qualquer troca de papel, o
+driver encontra a principal nova sem alteração de configuração.
+
+**PostgreSQL** usa Patroni sobre três instâncias: duas em DC1, com réplica síncrona, e uma em DC2,
+assíncrona e marcada para nunca ser promovida automaticamente. O etcd que o Patroni usa para
+eleger a principal tem três membros, todos em DC1, para que o quórum não dependa do enlace. O
+PgBouncer aponta para um endereço virtual que o `vip-manager` mantém sempre na principal. A
+promoção dentro do sítio leva menos de trinta segundos.
+
+> *Decisão: troca de papel entre sítios sempre humana, inclusive para o nível 1. A alternativa é o
+> Fast-Start Failover entre sítios, com o observador num terceiro local. A Secretaria não tem
+> terceiro sítio, e um observador num dos dois sítios só desloca o problema da partição de rede.
+> O custo é o nível 1 depender de uma decisão humana em até dez minutos para voltar a escrever, o
+> que entra no tempo de retomada declarado na tabela de classes.*
 
 A aplicação precisa colaborar, e isso é responsabilidade do time:
 
@@ -112,24 +132,59 @@ O cenário de perda total de DC1 é o que define o plano de continuidade. A sequ
 
 ```mermaid
 flowchart TD
-    E["DC1 indisponível"] --> D1["HAProxy detecta<br/>em menos de 10 segundos"]
-    D1 --> N1["Nível 1 continua servindo<br/>em prd-dc2, sem ação humana"]
-    D1 --> DEC["Decisão de ativação do plano<br/>coordenador de plantão"]
+    E["DC1 indisponível"] --> D1["Vigilância externa em DC2<br/>aciona o plantão"]
+    E --> N1["Nível 1 já em execução em prd-dc2<br/>leitura atende, escrita aguarda o banco"]
+    D1 --> DEC["Decisão de ativação do plano<br/>coordenador de plantão, até 10 min"]
+    DEC --> DNS["DNS público aponta para<br/>o par HAProxy de DC2"]
     DEC --> DB["Troca de papel do banco<br/>Data Guard e Patroni para DC2"]
     DB --> N2["Escala nível 2 em prd-dc2<br/>réplicas de zero para o valor normal"]
-    N2 --> GL["GitLab secundário promovido<br/>Argo CD reconstruído em DC2"]
+    N2 --> GL["GitLab secundário promovido<br/>Argo CD de contingência ativado<br/>Conjur promovido em DC2"]
     GL --> N3["Nível 3 restaurado por backup"]
 
     classDef auto fill:#1f4a3d,stroke:#7fc8ab,color:#eafaf3
     classDef manual fill:#4a3a1f,stroke:#d8b86a,color:#faf3e6
     class D1,N1 auto
-    class DEC,DB,N2,GL,N3 manual
+    class DEC,DNS,DB,N2,GL,N3 manual
 ```
 
 O que é automático está em verde e acontece em segundos. O que exige decisão humana está em âmbar,
 porque a troca de papel do banco é irreversível na prática: voltar para DC1 depois exige
 ressincronizar no sentido contrário. Automatizar essa decisão transforma uma oscilação de rede de
 dois minutos num dia de trabalho de reconstrução.
+
+**O nível 1 não fica fora do ar enquanto a decisão é tomada, mas fica sem escrita.** A aplicação
+em `prd-dc2` continua respondendo, e as consultas que podem ler da réplica de DC2 seguem
+funcionando. A emissão de nota, que escreve, devolve erro até a troca de papel. Por isso o tempo de
+retomada do nível 1 inclui a decisão humana, e por isso o roteiro de resposta dessa decisão é o mais ensaiado
+da plataforma.
+
+### A borda
+
+Cada datacenter tem o próprio par de HAProxy, com endereço virtual mantido por VRRP dentro do
+sítio. Nenhuma rede é esticada entre DC1 e DC2. Em operação normal, o DNS público aponta para o
+endereço de DC1, e o par de DC1 distribui o tráfego entre os roteadores dos dois sítios. O par de
+DC2 fica configurado e testado, sem receber tráfego externo.
+
+Na perda de DC1, o plano inclui apontar o DNS público para o endereço de DC2. Com tempo de vida de
+sessenta segundos nos registros, a troca se completa em poucos minutos para a maioria dos clientes.
+A configuração do par está em [`exemplos/borda/haproxy.cfg`](../exemplos/borda/haproxy.cfg).
+
+> *Decisão: troca da entrada pública por DNS com tempo de vida curto, e não por anúncio de rota
+> BGP do mesmo prefixo nos dois sítios. O anúncio BGP troca em segundos e não depende da cópia de
+> DNS guardada pelos clientes, mas exige sistema autônomo próprio e operação de roteamento externo que é da
+> equipe de rede, não da plataforma. O custo é o cliente com resposta de DNS guardada demorar alguns minutos a
+> mais. Se a Secretaria já anunciar prefixo próprio, o BGP passa a ser a escolha.*
+
+### A observabilidade e o alerta na perda de DC1
+
+O Grafana e a consulta global do Thanos ficam em `plat-dc1` e caem junto com DC1. O que não pode
+cair junto é a capacidade de acordar alguém. Por isso cada cluster de execução tem o próprio
+Prometheus, que avalia as regras de alerta localmente, e o Alertmanager roda em agrupamento com
+membros nos dois sítios. `prd-dc2` continua avaliando e notificando sem DC1.
+
+Falta ainda o caso em que o próprio Alertmanager some. Uma regra que dispara sempre, o sinal de
+vida, é enviada a cada minuto para um serviço de vigilância hospedado fora dos dois datacenters.
+Se o sinal parar de chegar, esse serviço aciona o plantão por conta própria.
 
 **Capacidade de DC2.** Se DC2 for dimensionado com metade da capacidade, a operação em sítio único
 roda degradada, e é preciso decidir o que desligar. A proposta é dimensionar DC2 com 70 por cento
@@ -144,6 +199,23 @@ regra do caminho reverso. Plano de continuidade nunca exercitado é um documento
 
 ---
 
+## O que tem redundância
+
+| Componente | Redundância | O que acontece na falha de uma instância |
+|---|---|---|
+| Nó de trabalho | Três réplicas por aplicação de nível 1 e 2, espalhadas por rack | O Kubernetes reagenda; o vSphere reinicia a máquina |
+| Plano de controle | Três nós por cluster | Com um a menos, nada muda; com dois, o cluster atende mas não muda |
+| Cluster de produção | Dois, um por sítio | O HAProxy tira o cluster em cerca de seis segundos |
+| Borda | Par de HAProxy por sítio, com VRRP | O endereço virtual passa ao par em segundos |
+| Oracle | Duas instâncias em DC1 com troca automática; espera em DC2 | Troca automática no sítio; entre sítios, decisão humana |
+| PostgreSQL | Patroni com três instâncias; PgBouncer atrás de endereço virtual | Promoção automática no sítio em menos de 30 segundos |
+| Conjur | Líder e espera em DC1; espera e réplica de leitura em DC2 | Pods continuam com o `Secret` já no cluster |
+| Harbor, GitLab, MinIO | Réplica em DC2 | Promoção manual da réplica, em dezenas de minutos |
+| Argo CD | Alta disponibilidade em `plat-dc1`; contingência desligada em DC2 | Sem implantação nova até voltar ou até a contingência ser ativada |
+| Prometheus e Alertmanager | Um Prometheus por cluster; Alertmanager com membros nos dois sítios; sinal de vida externo | Cada cluster continua alertando sozinho |
+
+---
+
 ## Pontos de falha que permanecem
 
 Esta é a parte que o desenho não resolve, e declará-la é mais útil do que escondê-la.
@@ -152,18 +224,19 @@ Esta é a parte que o desenho não resolve, e declará-la é mais útil do que e
 |---|---|---|---|
 | Enlace entre DC1 e DC2 | Replicação de banco para e os sítios divergem | Dois caminhos de operadoras distintas | Falha simultânea dos dois caminhos; partição de rede com os dois sítios vivos |
 | DNS corporativo | Nada se resolve, nem internamente | Dois servidores, um por sítio | Erro de configuração se propaga aos dois |
-| Diretório corporativo | Ninguém autentica no OpenShift, GitLab, Grafana | Réplica em DC2 | Conta local de emergência, guardada em cofre físico, com uso auditado |
+| Diretório corporativo e Keycloak | Ninguém autentica no OpenShift, GitLab, Grafana e Argo CD | Réplica do diretório e instância do Keycloak em DC2; conta local de emergência em cofre físico, com uso auditado | Erro de configuração replicado para a réplica junto com o dado |
+| Borda e DNS público | Contribuinte não alcança nenhuma aplicação | Par de HAProxy em cada sítio; DNS com tempo de vida de 60 segundos | A troca do DNS é manual e depende da cópia guardada pelos clientes |
+| Observabilidade em `plat-dc1` | Sem painel e sem consulta global na perda de DC1 | Prometheus e Alertmanager em cada cluster; sinal de vida para vigilância externa | Investigação de incidente em DC2 sem o histórico longo até `plat-dc1` voltar |
 | vCenter | Nenhuma máquina virtual nova; as existentes continuam | vCenter High Availability | Os clusters sobrevivem, mas a plataforma perde a capacidade de crescer |
-| Vault | Pods novos não obtêm segredo; os em execução continuam | Três nós com Raft, selagem automática | Perda das chaves de recuperação; guardadas em cofre físico com custódia dividida |
+| Conjur | Segredo novo e rotação param; pods em execução e pods reagendados continuam, porque o `Secret` já está no cluster | Líder e réplica de espera em DC1, réplica de espera e réplica de leitura em DC2 | Perda da chave de dados do cofre; guardada em cofre físico com custódia dividida |
+| Argo CD central | Sem entrega nova e sem correção de desvio; nada para de executar | Alta disponibilidade em `plat-dc1`, contingência desligada em DC2 | A contingência envelhecer sem ninguém perceber; ativada de verdade no exercício semestral |
 | GitLab | Sem entrega nova; produção continua rodando | Secundário em DC2 com Geo | Promoção manual, de dezenas de minutos |
 | Armazenamento compartilhado | Volumes persistentes indisponíveis | Dois agrupamentos, um por sítio | Aplicação com estado de nível 1 depende de replicação correta entre eles |
 | Equipe de plataforma | Nenhuma alteração avança | Dupla por área, documentação viva | Equipe pequena com pessoa única em alguma área; o maior risco dos doze meses |
 | Dependência externa | Integração com outros órgãos indisponível | Disjuntor, fila com repetição, modo degradado | Fora da governança da Secretaria |
 
-Dois desses merecem comentário.
-
 **A equipe é o ponto de falha mais provável.** Hardware redundante é comprável; a pessoa que sabe
-restaurar o Vault, não. A mitigação é rodízio obrigatório de plantão, runbook escrito por quem não
+restaurar o cofre de segredos, não. A mitigação é rodízio obrigatório de plantão, roteiro de resposta escrito por quem não
 fez a instalação e exercício de restauração executado por quem nunca executou antes.
 
 **A partição de rede entre sítios com os dois vivos** é o cenário mais perigoso de todos. Pior que

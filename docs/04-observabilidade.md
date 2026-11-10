@@ -4,9 +4,10 @@ Observabilidade aqui tem um objetivo mensurável: reduzir o tempo entre a reclam
 identificação do componente responsável. Tudo o que não contribui para isso é custo de
 armazenamento.
 
-A aplicação emite métrica, log e trace para um destino só, o coletor OpenTelemetry. O coletor
-decide para onde cada sinal vai. Trocar Tempo por Jaeger, ou Loki por Elasticsearch, passa a ser
-alteração de configuração do coletor, sem tocar em nenhuma das 60 aplicações.
+A aplicação emite log e trace para um destino só, o coletor OpenTelemetry, que decide para onde
+cada sinal vai. Trocar Tempo por Jaeger, ou Loki por Elasticsearch, passa a ser alteração de
+configuração do coletor, sem tocar em nenhuma das 60 aplicações. A métrica segue outro caminho: o
+Prometheus de cada cluster a busca na aplicação.
 
 ---
 
@@ -14,25 +15,26 @@ alteração de configuração do coletor, sem tocar em nenhuma das 60 aplicaçõ
 
 ```mermaid
 flowchart LR
-    APP["Aplicação<br/>SDK OpenTelemetry"]
+    APP["Aplicação<br/>agente Java OpenTelemetry"]
     NODE["Coletor por nó<br/>DaemonSet"]
-    GW["Coletor de entrada<br/>amostragem e enriquecimento"]
-    PROM["Prometheus<br/>retenção 15 dias"]
+    GW["Coletor de entrada<br/>amostragem de cauda"]
+    PROM["Prometheus do cluster<br/>regras de alerta, 15 dias"]
+    AM["Alertmanager<br/>membros nos dois sítios"]
     THA["Thanos<br/>consulta global"]
     LOKI["Loki"]
     TEMPO["Tempo"]
     MINIO["MinIO<br/>retenção longa"]
     GRAF["Grafana"]
-    AM["Alertmanager"]
     ZAP["Plantão<br/>telefone e mensagem"]
-    SD["Service desk<br/>chamado"]
+    SD["Central de serviços<br/>chamado"]
+    VIG["Vigilância externa<br/>fora dos dois sítios"]
 
-    APP -->|OTLP| NODE
-    NODE --> GW
+    APP -->|log e trace, OTLP| NODE
+    NODE -->|por identificador de trace| GW
     GW --> LOKI
     GW --> TEMPO
     PROM -->|raspagem| APP
-    PROM --> THA
+    PROM -->|escrita remota| THA
     THA --> MINIO
     LOKI --> MINIO
     TEMPO --> MINIO
@@ -44,19 +46,38 @@ flowchart LR
     PROM --> AM
     AM -->|severidade crítica| ZAP
     AM -->|severidade de aviso| SD
+    AM -.->|sinal de vida a cada minuto| VIG
 
     classDef col fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
     classDef arm fill:#1f4a3d,stroke:#7fc8ab,color:#eafaf3
     classDef saida fill:#4a1f2e,stroke:#d98fa6,color:#fae9ef
     class NODE,GW,PROM col
     class THA,LOKI,TEMPO,MINIO arm
-    class AM,ZAP,SD saida
+    class AM,ZAP,SD,VIG saida
 ```
+
+**A regra de alerta roda no cluster onde a aplicação está.** O Prometheus de cada cluster de
+execução raspa os pods pelo `PodMonitor` que o chart base cria e avalia ali mesmo as regras de
+orçamento de erro. No OpenShift, quem faz isso é o monitoramento de cargas do usuário, que já vem
+no produto. O histórico vai por escrita remota ao Thanos, em `plat-dc1`, para a consulta global e
+para a retenção longa. Na perda de DC1, `prd-dc2` perde o painel global, mas continua avaliando
+regra e acordando gente.
+
+> *Decisão: métrica por raspagem no Prometheus do cluster, e não enviada pelo coletor para um
+> armazenamento central. Com o envio central, a regra de alerta precisaria ser avaliada no centro,
+> em `plat-dc1`, e cairia junto com DC1, justamente quando mais importa. O custo é a métrica não
+> passar pelo coletor: trocar o Prometheus não é só configuração do coletor, como é para log e
+> trace.*
+
+**O trace inteiro chega à mesma réplica do coletor de entrada.** A amostragem de cauda decide
+depois de ver o trace completo. O coletor por nó encaminha cada trecho pelo identificador de trace,
+de modo que todos os trechos de um pedido caiam na mesma réplica. Sem isso, três réplicas atrás de
+um balanceador comum veriam pedaços de cada trace e decidiriam errado.
 
 A configuração do coletor está em
 [`exemplos/observabilidade/otel-collector.yaml`](../exemplos/observabilidade/otel-collector.yaml).
-O ponto central dela é o processador `k8sattributes`, que carimba cada sinal com namespace, pod,
-nó e time dono. Sem esse carimbo, o roteamento de alerta por time não funciona.
+O processador `k8sattributes` carimba log e trace com namespace, pod, nó e time dono. É o carimbo
+que permite, no Grafana, sair de um trace para o log do mesmo pod e filtrar por time.
 
 ---
 
@@ -64,8 +85,9 @@ nó e time dono. Sem esse carimbo, o roteamento de alerta por time não funciona
 
 ### Métrica
 
-Toda aplicação expõe o mesmo conjunto mínimo, porque é o que permite comparar sessenta aplicações
-no mesmo painel. O chart base injeta a configuração do SDK, então o time não escreve isso.
+Toda aplicação expõe o mesmo conjunto mínimo, porque só assim sessenta aplicações cabem no mesmo
+painel. O agente Java do OpenTelemetry vem na imagem base e o chart o configura, então o time não
+escreve isso.
 
 | Métrica | Para que serve |
 |---|---|
@@ -88,7 +110,7 @@ frequente de capacidade.
 
 Log estruturado em JSON, uma linha por evento, com campos obrigatórios: horário em UTC, nível,
 mensagem, nome do serviço, versão, identificador de trace e identificador de correlação do pedido.
-O chart base configura isso e o controle de admissão recusa pod cuja imagem não declare o padrão.
+O chart base configura isso, e a lista de prontidão para produção confere.
 
 O que não entra no log, e isso é verificado por regra do coletor: documento de identificação,
 número de inscrição fiscal, valor de tributo, senha, token e cabeçalho de autorização. O coletor
@@ -160,32 +182,33 @@ A exceção são as métricas de capacidade com horizonte previsível. Disco que
 em quatro horas gera chamada telefônica, porque é problema certo com tempo de agir. O critério é a
 previsão, não o percentual.
 
-### Regra 3: todo alerta tem dono, runbook e prazo
+### Regra 3: todo alerta tem dono, roteiro de resposta e prazo
 
 Um alerta não entra em produção sem três campos preenchidos:
 
 ```yaml
 annotations:
-  summary: "Consumo acelerado do orçamento de erro em {{ $labels.app }}"
+  summary: "Consumo acelerado do orçamento de erro em {{ $labels.namespace }}"
   description: "Taxa de erro em {{ $value | humanizePercentage }} na última hora."
-  runbook_url: "https://wiki.sefaz.interno/runbooks/{{ $labels.app }}/erro-5xx"
+  runbook_url: "https://wiki.sefaz.interno/runbooks/nfe-emissor/erro-5xx"
 labels:
   severity: critical
-  team: "{{ $labels.team }}"
+  time: fiscal
 ```
 
-O `team` vem do carimbo que o coletor aplica, e é o que o Alertmanager usa para rotear. Alerta de
-aplicação vai para o time dono; alerta de nó, de etcd, de certificado e de registry vai para a
+O rótulo `time` vem da ficha do catálogo, que gera a regra de alerta de cada aplicação, e é o que
+o Alertmanager usa para rotear. Alerta de aplicação vai para o time dono; alerta de nó, de etcd, de certificado e de registry vai para a
 plataforma. O roteamento está em
 [`exemplos/observabilidade/alertmanager.yaml`](../exemplos/observabilidade/alertmanager.yaml).
 
-O runbook responde a quatro perguntas: o que isso significa, como confirmar, o que fazer agora e
-quando escalar. Dois parágrafos bastam. Runbook ausente é impedimento de aprovação do alerta.
+O roteiro de resposta responde a quatro perguntas: o que isso significa, como confirmar, o que fazer agora e
+quando escalar. Dois parágrafos bastam. Roteiro de resposta ausente é impedimento de aprovação do alerta.
 
 ### Regra 4: agrupamento e inibição desde o primeiro dia
 
 Um nó que cai gera, sem tratamento, quarenta pods não prontos, quarenta alertas de disponibilidade
-e várias chamadas telefônicas sobre o mesmo evento. O Alertmanager agrupa por cluster e namespace,
+e várias chamadas telefônicas sobre o mesmo evento. O Alertmanager agrupa por cluster, pelo rótulo
+externo que cada Prometheus acrescenta, e por namespace,
 e tem regra de inibição: enquanto houver alerta de nó indisponível, os alertas de pod naquele nó
 ficam suprimidos.
 
@@ -210,7 +233,7 @@ manutenção.
 
 Três painéis, nessa ordem.
 
-**Painel de visão geral da plataforma**: estado dos quatro clusters, nós fora do ar, capacidade
+**Painel de visão geral da plataforma**: estado dos cinco clusters, nós fora do ar, capacidade
 livre, certificados vencendo em menos de trinta dias, estado de sincronização do Argo CD, fila de
 build.
 
@@ -220,16 +243,22 @@ implantações marcadas sobre o gráfico. A marcação da implantação sobre o 
 peça que mais acelera diagnóstico, porque responde de imediato se a degradação começou com a
 entrega.
 
-**Painel de dependências**: latência e taxa de erro do Oracle, do PostgreSQL, do Kafka e das
-integrações externas. Quando várias aplicações degradam juntas, a causa quase sempre está aqui.
+**Painel de dependências**: latência e taxa de erro do Oracle, do PostgreSQL e das integrações
+externas. Quando várias aplicações degradam juntas, a causa quase sempre está aqui.
 
 ---
 
 ## A operação do dia a dia
 
-Plantão em duas camadas. A primeira é do time dono da aplicação, em horário estendido, para alerta
-da própria aplicação. A segunda é da plataforma, em regime contínuo, para alerta de infraestrutura
-e para escalonamento.
+Plantão em duas camadas. A primeira é do time dono da aplicação: contínua para o nível 1, em
+horário estendido para o nível 2. A segunda é da plataforma, em regime contínuo, para alerta de
+infraestrutura e para escalonamento. A ferramenta de escala de plantão guarda as escalas, faz a
+chamada telefônica e escala para a plataforma o alerta não reconhecido em vinte minutos.
+
+Uma regra que dispara sempre, o sinal de vida, sai de cada cluster a cada minuto para um serviço de
+vigilância fora dos dois datacenters. Se o sinal parar, a cadeia de alerta caiu, e a vigilância
+aciona o plantão da plataforma por conta própria. Sem ela, a pane que derruba o Alertmanager é
+também a que ninguém fica sabendo.
 
 Toda chamada telefônica gera registro com horário de disparo, horário de reconhecimento, horário de
 resolução e causa. Incidente de severidade 1 ou 2 gera análise posterior sem atribuição de culpa,

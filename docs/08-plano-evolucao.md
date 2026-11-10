@@ -15,10 +15,10 @@ observabilidade útil sem padrão de telemetria, nem migrar com segurança sem s
 gantt
     title Doze meses de implantação
     dateFormat YYYY-MM-DD
-    axisFormat %b
+    axisFormat %m/%y
 
     section Fase 0
-    Descoberta e linha de base      :f0, 2026-01-01, 45d
+    Descoberta e linha de base      :f0, 2027-01-04, 45d
 
     section Fase 1
     Fundação e caminho pavimentado  :f1, after f0, 75d
@@ -30,7 +30,7 @@ gantt
     Continuidade e escala           :f3, after f2, 90d
 
     section Fase 4
-    Maturidade e desligamento       :f4, after f3, 90d
+    Maturidade e desligamento       :f4, after f3, 60d
 ```
 
 ---
@@ -51,7 +51,11 @@ plataforma dimensionada por chute.
 - Medição da linha de base: tempo entre commit e produção, frequência de entrega, percentual de
   entregas com correção urgente, tempo de restauração. Sem esse número de partida, não há como
   mostrar resultado no mês 12.
-- Formação do time de plataforma, com no mínimo quatro pessoas e dupla por área.
+- Formação do time de plataforma, com no mínimo quatro pessoas e dupla por área, e contratação de
+  mais duas até a fase 2. Plantão contínuo com quatro pessoas é uma semana de plantão a cada
+  quatro, durante doze meses de construção; com seis, a escala fecha sem esgotar ninguém.
+- Levantamento do custo de software e abertura das contratações que demoram (ver "Custo e
+  contratação", abaixo).
 - Definição do que não entra na plataforma nesses doze meses, por escrito.
 
 **Entregável:** inventário publicado, classificação acordada, linha de base registrada, lista das
@@ -69,7 +73,9 @@ tolera erro de aprendizado, nem a mais irrelevante, cujo sucesso não convence n
 
 - Terraform e Ansible para as máquinas da plataforma, com o papel de linha de base validado.
 - Clusters `plat-dc1` e `dev-dc1` em operação.
-- Harbor, Vault, Keycloak e runners próprios.
+- Harbor, Keycloak e runners próprios.
+- Conjur integrado ao PAM, com a primeira política de rotação em conta dupla e o External Secrets
+  autenticando por ServiceAccount em `dev-dc1`.
 - Esteira completa para as três aplicações piloto: build, teste, SonarQube, varredura, assinatura,
   publicação.
 - Argo CD gerenciando `dev-dc1`, com o repositório de manifestos e o gerador de aplicações.
@@ -93,7 +99,7 @@ usável.
 - Clusters `hml-dc1` e `prd-dc1`.
 - HAProxy em par, com a regra de corte por aplicação entre legado e plataforma.
 - Políticas de admissão com Kyverno, em modo auditoria por um mês e depois obrigatórias.
-- Plantão formalizado, com escala, runbooks e roteamento por time.
+- Plantão formalizado, com escala, roteiros de resposta e roteamento por time.
 - Alertas de orçamento de erro para as aplicações piloto.
 - Velero com backup dos quatro clusters e primeira restauração testada.
 - Primeira onda de migração: 10 aplicações sem estado, de nível 2 e 3.
@@ -104,6 +110,12 @@ pelo menos uma delas de propósito.
 **Por que aqui:** produção antes da continuidade é deliberado. Operar produção em um sítio durante
 três meses ensina o que o segundo sítio precisa ter. Construir os dois sítios antes de ter tráfego
 real produz uma contingência desenhada para suposições.
+
+**O que fica descoberto nesta fase, e por que é aceitável.** Até a fase 3, as aplicações migradas
+rodam só em DC1. Uma perda de DC1 nesse intervalo deixa essas dez aplicações sem o segundo sítio
+que elas tinham no legado. A mitigação é o próprio legado: as máquinas virtuais das aplicações
+migradas só são desligadas na fase 4, e o HAProxy de DC2 devolve o tráfego para elas invertendo a
+regra de rota. Por isso a primeira onda tem só aplicações de nível 2 e 3, e nenhuma de nível 1.
 
 ---
 
@@ -161,7 +173,7 @@ A forma mais comum de o projeto fracassar sem ninguém perceber. Quatro pessoas 
 manualmente não sobra tempo para construir, e a plataforma congela no estado da fase 1.
 
 **Mitigação:** o autoatendimento é entregável da fase 1, não da fase 4. A terceira ocorrência do
-mesmo chamado vira item de backlog. O percentual de tempo da equipe gasto em chamado é medido, e
+mesmo chamado vira item da fila de trabalho. O percentual de tempo da equipe gasto em chamado é medido, e
 acima de 40 por cento a migração é pausada até cair.
 
 ### Risco 2: resistência dos times
@@ -215,7 +227,7 @@ durante a migração de cada aplicação. Documentação escrita para quem está
 Credencial dentro de pipeline antigo, de arquivo de configuração e de repositório é quase certa num
 parque de 60 aplicações. Migrar sem tratar leva o problema junto.
 
-**Mitigação:** varredura de histórico do Git logo na fase 1, com relatório por time. Vault e
+**Mitigação:** varredura de histórico do Git logo na fase 1, com relatório por time. Conjur e
 External Secrets disponíveis antes da primeira migração. Rotação obrigatória de toda credencial
 encontrada, porque o que esteve em repositório é considerado comprometido.
 
@@ -223,8 +235,40 @@ encontrada, porque o que esteve em repositório é considerado comprometido.
 
 Equipe pequena com especialista único por área é o ponto de falha mais provável dos doze meses.
 
-**Mitigação:** dupla por área desde a fase 0. Runbook escrito por quem não fez a instalação.
+**Mitigação:** dupla por área desde a fase 0. Roteiro de resposta escrito por quem não fez a instalação.
 Rodízio de plantão. O exercício de continuidade é executado por quem não o planejou.
+
+### Risco 9: contratação mais lenta que o cronograma
+
+Subscrição de OpenShift, licença do Conjur e do PAM, edição Premium do GitLab, eventual opção de TDE do Oracle e o hardware
+de DC2 passam por processo de compra pública, de três a seis meses cada. Uma contratação atrasada
+segura a fase inteira que depende dela.
+
+**Mitigação:** levantamento de custo na fase 0 e abertura das contratações da fase 3 ainda na fase
+1. Cada componente pago tem alternativa aberta declarada (OpenBao para o Conjur, Quay ou Harbor
+para o registry, SonarQube Community para a edição Developer), para que um atraso troque a
+ferramenta, e não pare o plano.
+
+---
+
+## Custo e contratação
+
+O valor exato depende do inventário da fase 0 e de preço de contrato, que esta proposta não tem
+como estimar com honestidade. O que dá para fazer agora é separar o que custa licença do que não
+custa, e dizer do que cada custo depende.
+
+| Item | Modelo de cobrança | Do que depende | Alternativa sem licença |
+|---|---|---|---|
+| OpenShift | Subscrição por pares de núcleos | Número de nós de `plat-dc1`, `hml-dc1`, `prd-dc1` e `prd-dc2` | RKE2 em produção (premissa do README) |
+| Conjur e PAM | Licença por quantidade de identidades | 60 aplicações em três ambientes, mais as identidades da esteira | OpenBao (ADR-008) |
+| TDE do Oracle | Opção licenciada à parte, por núcleo do banco | Quantos bancos guardam dado fiscal | Cifra do datastore, com o limite declarado em `docs/01` |
+| SonarQube Developer | Por linhas de código analisadas | Tamanho das 60 aplicações | SonarQube Community, já adotado (ADR-012) |
+| GitLab Premium | Por usuário | O GitLab secundário em DC2 usa o Geo, que é da edição Premium | Restauração do backup do GitLab em DC2, com retomada em horas e não em minutos |
+| Hardware de DC2 | Compra de capital | 70 por cento da capacidade de `prd-dc1` | Continuidade por restauração de backup |
+| Harbor, Argo CD, Kyverno, Prometheus, Grafana, Loki, Tempo, Keycloak | Sem licença | Horas da equipe de plataforma | — |
+
+O retorno financeiro aparece na fase 4, com o desligamento das máquinas virtuais das aplicações
+migradas e das licenças de servidor de aplicação que elas usavam.
 
 ---
 
@@ -241,7 +285,7 @@ Quatro números comparados com a linha de base da fase 0, publicados trimestralm
 
 Dois indicadores complementares, que medem a plataforma em vez da entrega: percentual de aplicações
 com nível de serviço declarado e com alerta funcionando, e tempo entre o pedido de aplicação nova e
-o primeiro deploy em desenvolvimento, cuja meta é de um dia.
+a primeira implantação em desenvolvimento, cuja meta é de um dia.
 
 Se esses números não melhorarem, a plataforma adicionou complexidade sem entregar benefício, e isso
 precisa aparecer no relatório tanto quanto o sucesso.

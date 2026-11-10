@@ -11,15 +11,31 @@ Em plataforma que hospeda dado fiscal, esses quatro casos importam mais que a ec
 
 | Cluster | Sítio | Distribuição | Papel | Nós de controle | Nós de trabalho |
 |---|---|---|---|---|---|
-| `plat-dc1` | DC1 | OpenShift | Esteira, registry, cofre, observabilidade, Argo CD | 3 | 6 |
+| `plat-dc1` | DC1 | OpenShift | Esteira, registry, observabilidade, Argo CD | 3 | 6 |
 | `dev-dc1` | DC1 | RKE2 sob Rancher | Desenvolvimento dos 12 times | 3 | 4 |
-| `hml-dc1` | DC1 | OpenShift | Homologação, espelho de configuração da produção | 3 | 6 |
+| `hml-dc1` | DC1 | OpenShift | Homologação, espelho de configuração da produção | 3 | 4 |
 | `prd-dc1` | DC1 | OpenShift | Produção, sítio primário | 3 | 12 |
-| `prd-dc2` | DC2 | OpenShift | Produção, sítio secundário | 3 | 12 |
+| `prd-dc2` | DC2 | OpenShift | Produção, sítio secundário | 3 | 9 |
 
-Os números de nó são ponto de partida, a ser revisto com o inventário de consumo real das 60
-aplicações, levantado na fase de descoberta. O que não é negociável é o três em nó de controle:
-abaixo disso o etcd perde quórum com uma única falha.
+Nó de controle tem 8 vCPU e 32 GB; nó de trabalho, 16 vCPU e 64 GB. Homologação tem um terço dos
+nós de trabalho de `prd-dc1`, com a mesma configuração por nó. `prd-dc2` tem 70 por cento da
+capacidade de `prd-dc1`, o que cobre o nível 1 e o nível 2 com as aplicações suspensíveis
+desligadas ([`docs/05`](05-resiliencia.md)).
+
+Os números são ponto de partida, a ser revisto com o inventário de consumo real das 60 aplicações,
+levantado na fase de descoberta. O que não é negociável é o três em nó de controle: abaixo disso o
+etcd perde quórum com uma única falha.
+
+Fora da tabela, em máquina virtual, ficam três grupos de peças:
+
+- **Os bancos e o Conjur.** O cofre tem líder e réplica de espera em DC1, réplica de espera e
+  réplica de leitura em DC2. Ele não roda em nenhum dos cinco clusters porque é necessário para
+  reconstruir qualquer um deles.
+- **Os pares de HAProxy**, um por sítio.
+- **As réplicas de plataforma em DC2**: o GitLab secundário, a réplica do Harbor e o MinIO
+  espelhado. DC2 não tem cluster de plataforma; essas três peças rodam em máquinas virtuais
+  dedicadas, instaladas pelos instaladores oficiais de cada produto para máquina virtual. O Argo
+  CD de contingência é a exceção: fica dentro de `prd-dc2`, desligado (ADR-009).
 
 ```mermaid
 flowchart LR
@@ -31,8 +47,8 @@ flowchart LR
     end
 
     subgraph DC2["Datacenter 2 — secundário"]
-        PRD2["prd-dc2<br/>OpenShift<br/>produção em espera quente"]
-        REP["Harbor réplica<br/>GitLab secundário<br/>MinIO espelhado"]
+        PRD2["prd-dc2<br/>OpenShift<br/>produção, com Argo CD<br/>de contingência desligado"]
+        REP["Em máquina virtual<br/>Harbor réplica · GitLab secundário<br/>MinIO espelhado"]
     end
 
     PLAT -->|Argo CD| DEV
@@ -92,12 +108,16 @@ A separação acontece em quatro camadas ao mesmo tempo. Nenhuma delas sozinha �
 
 A regra de permissão em produção é a mais importante e a mais difícil de sustentar politicamente.
 **Em `prd-dc1` e `prd-dc2`, nenhuma pessoa tem permissão de escrita no estado da aplicação.** O
-acesso humano é de leitura, com elevação temporária registrada para incidente. Quem quiser mudar
-produção abre merge request no repositório de manifestos.
+acesso humano é de leitura. Durante um incidente, o plantão age sobre o processo pelo Argo CD
+(sincronizar, desligar a sincronização de uma aplicação, voltar à versão anterior), com registro,
+e não edita objeto à mão ([`docs/09`](09-gitops-argocd.md)). Quem quiser mudar produção abre merge
+request no repositório de manifestos.
 
-A anonimização da massa de homologação não é detalhe. Dado fiscal copiado para um ambiente com
-permissão mais larga é incidente de privacidade esperando acontecer. A rotina de carga mascara
-documento, nome e valor antes da restauração, e roda como job agendado no cluster de plataforma.
+A massa de homologação é anonimizada porque dado fiscal copiado para um ambiente com permissão mais
+larga é incidente de privacidade esperando acontecer. A rotina de carga mascara documento, nome e
+valor antes da restauração. Ela roda numa máquina virtual dedicada, na zona de banco, operada pela
+equipe de banco, e não em nenhum cluster: o cluster de plataforma executa build de código dos
+doze times e não pode ter rota até o banco de produção.
 
 ---
 
@@ -107,7 +127,7 @@ Cada aplicação tem um namespace por ambiente, nomeado `<sigla-do-time>-<aplica
 Doze times e sessenta aplicações dão cerca de cento e oitenta namespaces somados os três ambientes,
 o que é tranquilo para um cluster do porte proposto.
 
-Cada namespace nasce com cinco objetos, criados pelo mesmo processo que cria o namespace:
+Cada namespace nasce com seis objetos, criados pelo mesmo processo que cria o namespace:
 
 - **ResourceQuota**, que limita CPU, memória e quantidade de objetos. Sem ela, uma aplicação com
   vazamento de memória consome o nó e derruba as vizinhas.
@@ -116,12 +136,17 @@ Cada namespace nasce com cinco objetos, criados pelo mesmo processo que cria o n
 - **NetworkPolicy** de negação por padrão, que bloqueia todo tráfego de entrada e libera apenas o
   controlador de entrada e os namespaces declarados como dependência.
 - **RoleBinding** ligado ao grupo do diretório corporativo do time dono.
-- **ServiceAccount** com vínculo ao Vault, para que o External Secrets obtenha segredo sem
-  credencial estática.
+- **ServiceAccount** `conjur-leitor`, registrada como identidade no Conjur, para que o External
+  Secrets obtenha segredo apresentando o token dela, sem credencial estática. A política do Conjur
+  só deixa essa identidade ler os caminhos da aplicação naquele ambiente.
+- **SecretStore** que liga o namespace ao Conjur por essa identidade. O time não pode criá-lo nem
+  alterá-lo; se pudesse, apontaria para outra identidade
+  ([`exemplos/segredos/`](../exemplos/segredos/)).
 
 > *Decisão: a negação por padrão na rede entra desde o primeiro namespace, e não como endurecimento
 > posterior. Ligar negação por padrão num cluster que já tem tráfego implícito entre sessenta
-> aplicações exige mapear dependências que ninguém documentou.*
+> aplicações exige mapear dependências que ninguém documentou. O custo é atrito na primeira semana
+> de cada aplicação: toda dependência precisa estar declarada no catálogo antes de funcionar.*
 
 A classificação de criticidade da aplicação, declarada no catálogo, define onde o pod pode rodar.
 Aplicações de nível 1 recebem tolerância para um conjunto de nós reservado, com hardware melhor e
@@ -134,8 +159,9 @@ campo que dispara isso.
 ## Distribuição dos nós dentro do sítio
 
 Dentro de `prd-dc1`, os doze nós de trabalho não podem viver no mesmo hospedeiro físico nem no
-mesmo chassi. A regra de anti-afinidade do vSphere espalha as máquinas virtuais, e a restrição de
-dispersão topológica do Kubernetes espalha os pods sobre essas máquinas.
+mesmo chassi. Nos clusters OpenShift, quem espalha as máquinas virtuais são os domínios de falha do
+vSphere, declarados na instalação ([`docs/06`](06-iac.md)); no RKE2, uma regra de anti-afinidade do
+vSphere. A restrição de dispersão topológica do Kubernetes espalha os pods sobre essas máquinas.
 
 Cada nó recebe rótulo de zona conforme o rack onde está o hospedeiro:
 
@@ -143,8 +169,10 @@ Cada nó recebe rótulo de zona conforme o rack onde está o hospedeiro:
 topology.kubernetes.io/zone: dc1-rack-a
 ```
 
-Com esse rótulo, uma aplicação com três réplicas fica obrigada a ter uma em cada rack. Perder um
-rack inteiro remove um terço da capacidade, não a aplicação. O chart base aplica essa restrição sem
+Com esse rótulo, uma aplicação com três réplicas fica com uma em cada rack sempre que houver
+capacidade. Perder um rack inteiro remove um terço da capacidade, não a aplicação. A regra é
+preferencial, e não obrigatória, de propósito: com um rack em manutenção, a obrigatória deixaria o
+pod pendente para sempre. O chart base aplica essa restrição sem
 que o time precise saber dela, como se vê em
 [`exemplos/helm/app-base/templates/deployment.yaml`](../exemplos/helm/app-base/templates/deployment.yaml).
 
@@ -164,10 +192,11 @@ Segundo, essa diferença é absorvida pelo chart base. O time preenche valores; 
 emite Route ou Ingress conforme o ambiente. Nenhum desenvolvedor escreve os dois.
 
 Terceiro, há um teste que protege contra a divergência silenciosa. A cada atualização de qualquer
-cluster, um job do pipeline de plataforma instala uma aplicação de referência nos quatro clusters e
+cluster, um job do pipeline de plataforma instala uma aplicação de referência nos quatro clusters de
+execução e
 verifica o mesmo conjunto de comportamentos. Se a aplicação de referência passa em desenvolvimento
 e falha em produção, a divergência aparece antes de uma aplicação real tropeçar nela.
 
-O Rancher também ganha um papel que o OpenShift não cobre: inventário único. Os quatro clusters
-ficam importados nele, o que dá uma lista só de nós, versões e estado de atualização. Isso vale
-mais do que parece quando a equipe de plataforma tem poucas pessoas.
+O Rancher também ganha um papel que o OpenShift não cobre: inventário único. Os cinco clusters
+ficam importados nele, o que dá uma lista só de nós, versões e estado de atualização. Com equipe
+pequena, essa lista única poupa horas de conferência a cada atualização.
