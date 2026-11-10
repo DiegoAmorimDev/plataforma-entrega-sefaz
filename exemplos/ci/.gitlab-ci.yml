@@ -13,14 +13,15 @@ include:
       - '/base/seguranca.yml'
       - '/base/imagem.yml'
       - '/base/promocao.yml'
-      - '/linguagens/dotnet.yml'
+      - '/linguagens/java.yml'
 
 variables:
   APP_NAME: nfe-emissor
   APP_TIME: fiscal
   APP_TIER: "1"
   SONAR_PROJECT_KEY: fiscal_nfe-emissor
-  DOTNET_VERSION: "8.0"
+  JAVA_VERSION: "21"
+  BANCO_TESTE: oracle            # o banco de produção desta aplicação
   COBERTURA_MINIMA_CODIGO_NOVO: "80"
 
 # Abaixo, apenas o que foge do padrão desta aplicação.
@@ -31,7 +32,7 @@ teste-contrato-autorizador:
   extends: .job-teste-base
   stage: teste
   script:
-    - dotnet test tests/Contrato --filter Categoria=Autorizador
+    - mvn -B verify -Pcontrato-autorizador
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"

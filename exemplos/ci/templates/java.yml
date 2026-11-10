@@ -1,0 +1,144 @@
+# plataforma/templates-ci @ v3 — /linguagens/java.yml
+#
+# Build e testes de uma aplicação Spring Boot com Maven. O que este arquivo
+# garante, mais do que compilar, é que cada tipo de teste rode no lugar certo e
+# com o limite de tempo certo (docs/03, "A estratégia de testes").
+
+compilar:
+  extends: .job-teste-base
+  stage: build
+  timeout: 10m
+  script:
+    - mvn -B -DskipTests package
+    # A versão do pom vai junto com o digest no comentário da promoção.
+    - echo "VERSAO_APP=$(mvn -q help:evaluate -Dexpression=project.version -DforceStdout)" >> build.env
+  artifacts:
+    # target/classes vai junto: o SonarQube analisa Java a partir do binário.
+    paths: [target/*.jar, target/classes/]
+    reports:
+      dotenv: build.env
+    expire_in: 1 day
+
+# ---------------------------------------------------------------------------
+# BLOQUEIA — teste unitário. JUnit 5 e Mockito, sem rede e sem banco.
+# ---------------------------------------------------------------------------
+teste-unitario:
+  extends: .job-teste-base
+  stage: teste
+  needs: [compilar]
+  timeout: 5m
+  script:
+    # O plugin do JaCoCo, herdado do pom pai da plataforma, gera
+    # target/site/jacoco/jacoco.xml para o portão de cobertura.
+    - mvn -B test jacoco:report
+
+# ---------------------------------------------------------------------------
+# BLOQUEIA — teste de integração com banco de verdade, o MESMO de produção.
+#
+# Banco em memória aceita SQL que o banco real recusa: o teste passa e a migração
+# quebra em homologação. Pelo mesmo motivo, aplicação que roda em Oracle é
+# testada em Oracle, e não em PostgreSQL: a variável BANCO_TESTE, declarada no
+# .gitlab-ci.yml do time, escolhe qual dos dois jobs abaixo roda. O banco é
+# serviço do próprio job, descartado no fim.
+#
+# Por que serviço do job e não Testcontainers na esteira: o Testcontainers precisa
+# de um daemon de contêiner, e daemon dentro de job exige contêiner privilegiado,
+# que a plataforma recusa (é o mesmo motivo do Kaniko em /base/imagem.yml). Na
+# máquina do desenvolvedor, o mesmo teste sobe o banco pelo Testcontainers. O
+# teste não sabe a diferença: com SPRING_DATASOURCE_URL definida, o Spring usa a
+# URL; sem ela, o @ServiceConnection do Testcontainers fornece uma.
+# ---------------------------------------------------------------------------
+.teste-integracao:
+  extends: .job-teste-base
+  stage: teste
+  needs: [compilar]
+  timeout: 10m
+  script:
+    # O Liquibase aplica as migrações do zero antes dos testes: a migração é
+    # testada a cada merge request, não só em homologação.
+    - mvn -B verify -DskipUnitTests jacoco:report-integration
+
+teste-integracao-postgres:
+  extends: .teste-integracao
+  rules:
+    - if: $BANCO_TESTE == "postgres"
+  services:
+    # A versão vem da mesma propriedade do pom que o Testcontainers usa
+    # localmente, para os dois caminhos nunca divergirem.
+    - name: ${REGISTRY}/proxy/library/postgres:16.4
+      alias: banco
+  variables:
+    POSTGRES_DB: teste
+    POSTGRES_USER: teste
+    POSTGRES_PASSWORD: teste          # banco descartável, existe só durante o job
+    SPRING_DATASOURCE_URL: jdbc:postgresql://banco:5432/teste
+    SPRING_DATASOURCE_USERNAME: teste
+    SPRING_DATASOURCE_PASSWORD: teste
+
+teste-integracao-oracle:
+  extends: .teste-integracao
+  rules:
+    - if: $BANCO_TESTE == "oracle"
+  timeout: 15m              # o Oracle leva mais para subir
+  services:
+    # Oracle Database Free, de uso livre para desenvolvimento e teste, na mesma
+    # versão maior de produção.
+    - name: ${REGISTRY}/proxy/gvenzl/oracle-free:23-slim-faststart
+      alias: banco
+  variables:
+    ORACLE_PASSWORD: teste          # banco descartável, existe só durante o job
+    APP_USER: teste
+    APP_USER_PASSWORD: teste
+    SPRING_DATASOURCE_URL: jdbc:oracle:thin:@//banco:1521/FREEPDB1
+    SPRING_DATASOURCE_USERNAME: teste
+    SPRING_DATASOURCE_PASSWORD: teste
+
+# ---------------------------------------------------------------------------
+# BLOQUEIA — cobertura das linhas alteradas no merge request.
+#
+# O SonarQube Community não analisa merge request (ADR-012). O diff-cover lê o
+# relatório do JaCoCo e calcula a cobertura só das linhas que este merge request
+# alterou. Código legado intocado não entra na conta.
+# ---------------------------------------------------------------------------
+cobertura-linhas-alteradas:
+  extends: .runner-comum
+  stage: qualidade
+  image: ${REGISTRY}/plataforma/diff-cover:9
+  needs:
+    - teste-unitario
+    - { job: teste-integracao-postgres, optional: true }
+    - { job: teste-integracao-oracle,   optional: true }
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - git fetch origin "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
+    - diff-cover target/site/jacoco/jacoco.xml target/site/jacoco-it/jacoco.xml
+        --compare-branch "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
+        --src-roots src/main/java
+        --fail-under "${COBERTURA_MINIMA_CODIGO_NOVO}"
+        --markdown-report cobertura.md
+    # Publica a tabela de linhas descobertas como comentário no merge request.
+    - /scripts/comentar-no-mr.sh cobertura.md
+  artifacts:
+    when: always
+    paths: [cobertura.md]
+
+# ---------------------------------------------------------------------------
+# INFORMA — teste de mutação.
+#
+# Responde à pergunta que a cobertura não responde: o teste falha quando o
+# código muda? Caro demais para o merge request; roda à noite em main e publica
+# o indicador no painel do time.
+# ---------------------------------------------------------------------------
+teste-mutacao:
+  extends: .job-teste-base
+  stage: qualidade
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "main"
+  timeout: 2h
+  script:
+    - mvn -B test-compile org.pitest:pitest-maven:mutationCoverage
+    - /scripts/publicar-no-painel-do-time.sh target/pit-reports/mutations.xml "${APP_TIME}"
+  allow_failure: true    # INFORMA

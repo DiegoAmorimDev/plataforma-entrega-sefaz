@@ -5,28 +5,39 @@
 #
 # Kaniko em vez de docker-in-docker: não exige contêiner privilegiado, que a
 # política de admissão da plataforma recusa.
+#
+# O repositório original do Kaniko foi arquivado pelo Google em 2025, e as imagens
+# em gcr.io não recebem mais correção de segurança. A plataforma usa a bifurcação
+# mantido pela Chainguard, espelhado no Harbor com o utilitário conjur-segredo.
+# Se a bifurcação deixar de ser mantido, a troca é pelo Buildah sem privilégio, e só
+# este arquivo muda.
 
 construir-imagem:
-  extends: .runner-comum
+  extends: [.runner-comum, .identidade-conjur]
   stage: imagem
   image:
-    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    name: ${REGISTRY}/plataforma/kaniko:v1.25-chainguard
     entrypoint: [""]
+  needs: [compilar, sonarqube]   # sem quality gate aprovado, não há imagem
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   script:
+    # Credencial de escrita no projeto do time no Harbor, lida do Conjur pela
+    # identidade do job. Não existe em variável de CI.
+    - HARBOR_AUTH="$(conjur-segredo "plataforma/esteira/harbor/${APP_TIME}")"
     - echo "{\"auths\":{\"${REGISTRY}\":{\"auth\":\"${HARBOR_AUTH}\"}}}" > /kaniko/.docker/config.json
 
     # --reproducible zera o horário das camadas: o mesmo conteúdo gera o mesmo
     # digest, o que torna o build verificável por terceiro.
+    # A base aprovada já traz o agente Java do OpenTelemetry: métrica, log e trace
+    # saem sem uma linha de instrumentação no código da aplicação.
     - /kaniko/executor
         --context "${CI_PROJECT_DIR}"
         --dockerfile "${CI_PROJECT_DIR}/Dockerfile"
         --destination "${IMAGEM}:${CI_COMMIT_SHORT_SHA}"
-        --destination "${IMAGEM}:${CI_COMMIT_TAG:-sem-tag}"
         --reproducible
         --digest-file /tmp/digest
-        --build-arg BASE=${REGISTRY}/base/dotnet-runtime:8.0-ubi9
+        --build-arg BASE=${REGISTRY}/base/openjdk-${JAVA_VERSION}-runtime:ubi9
         --label org.opencontainers.image.revision="${CI_COMMIT_SHA}"
         --label org.opencontainers.image.source="${CI_PROJECT_URL}"
         --label sefaz.time="${APP_TIME}"
@@ -48,39 +59,62 @@ varrer-imagem:
   extends: .runner-comum
   stage: imagem
   needs: [construir-imagem]
-  image: aquasec/trivy:latest
+  # Versão fixada e servida pelo proxy do Harbor: a esteira que exige digest
+  # das aplicações não puxa ferramenta mutável da internet.
+  image: ${REGISTRY}/proxy/aquasec/trivy:0.56.2
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   script:
     - trivy image --severity CRITICAL --ignore-unfixed --exit-code 1
         --ignorefile .trivyignore-base
         "${IMAGEM}@${IMAGEM_DIGEST}"
 
-gerar-sbom:
+gerar-lista-de-componentes:
   extends: .runner-comum
   stage: imagem
   needs: [construir-imagem]
-  image: anchore/syft:latest
+  image: ${REGISTRY}/proxy/anchore/syft:v1.14.0
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   script:
     # A lista de componentes é o que responde "quais das 60 aplicações usam esta
-    # biblioteca" sem abrir chamado para doze times.
+    # biblioteca" sem abrir chamado para doze times. Ela é anexada à imagem
+    # como atestação assinada no job seguinte, que tem a chave.
     - syft "${IMAGEM}@${IMAGEM_DIGEST}" -o cyclonedx-json > sbom.json
-    - cosign attach sbom --sbom sbom.json "${IMAGEM}@${IMAGEM_DIGEST}"
   artifacts:
     paths: [sbom.json]
     expire_in: 5 years
 
 assinar-imagem:
-  extends: .runner-restrito
+  extends: [.runner-restrito, .identidade-conjur]
   stage: imagem
-  needs: [construir-imagem, varrer-imagem]
-  image: gcr.io/projectsigstore/cosign:latest
+  needs: [construir-imagem, varrer-imagem, gerar-lista-de-componentes]
+  image: ${REGISTRY}/plataforma/cosign:v3
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   script:
-    # A chave privada vive no Vault e é obtida pela identidade do job, não por
-    # variável de CI de longa duração.
-    - cosign sign --key hashivault://cosign-plataforma "${IMAGEM}@${IMAGEM_DIGEST}"
-    - cosign verify --key hashivault://cosign-plataforma "${IMAGEM}@${IMAGEM_DIGEST}"
+    # O Conjur não funciona como serviço de chave para o Cosign. A chave privada é
+    # lida pela identidade do job, existe só em memória durante a assinatura e é
+    # descartada. A política do Conjur só entrega a chave a job de branch
+    # protegido, em runner restrito, de projeto autorizado (ADR-008).
+    #
+    # A assinatura vai para o Harbor, ao lado da imagem: o job precisa da
+    # credencial de escrita no projeto do time, também lida do Conjur.
+    #
+    # Rede fechada: sem registro público de transparência (Rekor). Por padrão,
+    # o Cosign publica a assinatura no Rekor público e exige essa entrada na
+    # verificação; o runner restrito não alcança a internet, e nem deve. A
+    # garantia vem da chave guardada no Conjur, e o Kyverno é configurado para
+    # não exigir o registro público.
+    - mkdir -p ~/.docker
+    - HARBOR_AUTH="$(conjur-segredo "plataforma/esteira/harbor/${APP_TIME}")"
+    - echo "{\"auths\":{\"${REGISTRY}\":{\"auth\":\"${HARBOR_AUTH}\"}}}" > ~/.docker/config.json
+    - export COSIGN_PASSWORD="$(conjur-segredo plataforma/esteira/cosign-senha)"
+    - conjur-segredo plataforma/esteira/cosign-chave > /dev/shm/cosign.key
+    - cosign sign --yes --tlog-upload=false --key /dev/shm/cosign.key "${IMAGEM}@${IMAGEM_DIGEST}"
+    # A lista de componentes vira atestação assinada pela mesma chave.
+    - cosign attest --yes --tlog-upload=false --key /dev/shm/cosign.key --type cyclonedx
+        --predicate sbom.json "${IMAGEM}@${IMAGEM_DIGEST}"
+    - rm -f /dev/shm/cosign.key ~/.docker/config.json
+    # A verificação usa a chave pública, a mesma que o Kyverno usa na admissão.
+    - cosign verify --insecure-ignore-tlog=true --key /chaves/cosign-plataforma.pub "${IMAGEM}@${IMAGEM_DIGEST}"
