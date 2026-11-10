@@ -1,0 +1,45 @@
+# apps/fiscal/nfe-emissor/overlays/hml/kustomization.yaml
+#
+# Homologação. O digest chega por merge request aberto pelo promotor, que se
+# aprova sozinho quando o pipeline do merge request passa. A configuração imita
+# a de produção; muda o tamanho e a integração de homologação.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fiscal-nfe-emissor-hml
+
+helmCharts:
+  - name: app-base
+    repo: oci://harbor.sefaz.interno/charts
+    version: 4.2.0
+    releaseName: nfe-emissor
+    valuesFile: ../../base/values.yaml
+    valuesInline:
+      ambiente: hml
+      replicaCount: 2
+      rota: { host: nfe-emissor.hml.sefaz.interno }
+      resources:               # medidos no teste de carga, como pede o catálogo
+        requests: { cpu: 500m, memory: 1Gi }
+        limits:   { cpu: "1",  memory: 1Gi }
+
+images:
+  - name: app
+    newName: harbor.sefaz.interno/fiscal/nfe-emissor
+    digest: sha256:9f2c7b4e1a8d3c5b7e9f0a2d4c6b8e1f3a5c7d9e0b2f4a6c8e0d2b4f6a8c0e2d  # 1.4.2, 3e9a1f2, validado em dev em 18/03 10:40
+
+generatorOptions:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    # Cada mudança de configuração gera um ConfigMap de nome novo. O antigo
+    # fica no cluster, ainda usado pelos pods estáveis durante o canário, sem
+    # deixar a Application "fora de sincronia" para sempre.
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+
+configMapGenerator:
+  - name: nfe-emissor-config
+    literals:
+      - SPRING_DATASOURCE_URL=jdbc:oracle:thin:@//dbfiscal-hml.sefaz.interno:1521/NFE_HML
+      - LOGGING_LEVEL_ROOT=INFO
+      - OTEL_TRACES_SAMPLER_ARG=0.1
+      - AUTORIZADOR_URL=https://homologacao.autorizador.sefaz.exemplo.gov.br

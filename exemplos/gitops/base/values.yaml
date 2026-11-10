@@ -1,0 +1,54 @@
+# apps/fiscal/nfe-emissor/base/values.yaml
+#
+# O que o time preenche. Nasce do catálogo e é o mesmo para os três ambientes.
+# Cada overlay infla o chart com este arquivo e acrescenta só o que é do
+# ambiente: o nome dele, o host, as réplicas e o digest.
+
+time: fiscal
+tier: "1"
+
+image:
+  repository: app      # nome lógico; o overlay troca pelo endereço e pelo digest
+  # Valor de preenchimento: o chart exige um digest, e o overlay o substitui.
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+linguagem: java        # escolhe as sondas do Spring Boot Actuator no chart
+
+# Migração pelo Liquibase como gancho do Argo CD, na onda -1, nos três
+# ambientes. O changelog vem da própria imagem, em /app/db/changelog.
+migracao:
+  habilitada: true
+
+resources:
+  requests: { cpu: 200m, memory: 512Mi }
+  limits:   { cpu: "1",  memory: 1Gi }
+
+rota:
+  publica: false       # o host vem de cada overlay
+
+# Segredos: só o caminho no Conjur e o nome da variável que a aplicação lê.
+# O chart gera um ExternalSecret que lê <time>/<app>/<ambiente>/<caminho>, por
+# exemplo fiscal/nfe-emissor/prd/banco.
+# A senha de produção nunca passa por este repositório nem pela mão do time.
+segredos:
+  - caminho: banco
+    chaves:
+      SPRING_DATASOURCE_USERNAME: usuario
+      SPRING_DATASOURCE_PASSWORD: senha
+  - caminho: certificado
+    chaves:
+      CERT_A1_PFX: pfx
+      CERT_A1_SENHA: senha
+  # Usuário de migração, com permissão estrutural, separado do usuário da
+  # aplicação. Vai para um Secret próprio, lido só pelo Job de migração.
+  - caminho: banco-migracao
+    destino: migracao
+    chaves:
+      usuario: usuario
+      senha: senha
+
+dependencias:
+  bancos:
+    - { tipo: oracle, host: dbfiscal.sefaz.interno, porta: 1521 }
+  externos:
+    - { host: autorizador.sefaz.exemplo.gov.br, porta: 443 }

@@ -1,0 +1,16 @@
+# apps/fiscal/nfe-emissor/overlays/prd-dc1/kustomization.yaml
+#
+# Sítio primário. Herda tudo de prd, inclusive o digest, e acrescenta só o que é
+# do sítio. A Application de prd-dc1 aponta para este diretório.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../prd
+
+configMapGenerator:
+  - name: nfe-emissor-config
+    behavior: merge
+    literals:
+      - SITIO=dc1

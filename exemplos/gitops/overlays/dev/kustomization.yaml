@@ -1,0 +1,44 @@
+# apps/fiscal/nfe-emissor/overlays/dev/kustomization.yaml
+#
+# Desenvolvimento. O promotor da esteira escreve o digest aqui direto, sem merge
+# request: erro em dev custa pouco e o retorno é rápido.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fiscal-nfe-emissor-dev
+
+helmCharts:
+  - name: app-base
+    repo: oci://harbor.sefaz.interno/charts
+    version: 4.2.0             # a versão do chart sobe ambiente por ambiente
+    releaseName: nfe-emissor
+    valuesFile: ../../base/values.yaml
+    valuesInline:
+      ambiente: dev
+      distribuicao: rke2       # desenvolvimento roda em RKE2: Ingress, não Route
+      replicaCount: 1
+      rota: { host: nfe-emissor.dev.sefaz.interno }
+
+images:
+  - name: app
+    newName: harbor.sefaz.interno/fiscal/nfe-emissor
+    # O mesmo digest que hml e prd recebem depois: é a mesma imagem.
+    digest: sha256:9f2c7b4e1a8d3c5b7e9f0a2d4c6b8e1f3a5c7d9e0b2f4a6c8e0d2b4f6a8c0e2d  # 1.4.2, 3e9a1f2, em dev desde 18/03 10:02
+
+# Onda -2, junto com o segredo: o Job de migração, na onda -1, já lê o ConfigMap.
+generatorOptions:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    # Cada mudança de configuração gera um ConfigMap de nome novo. O antigo
+    # fica no cluster, ainda usado pelos pods estáveis durante o canário, sem
+    # deixar a Application "fora de sincronia" para sempre.
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+
+configMapGenerator:
+  - name: nfe-emissor-config
+    literals:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://nfe-emissor-banco.fiscal-nfe-emissor-dev:5432/nfe
+      - LOGGING_LEVEL_ROOT=DEBUG
+      - OTEL_TRACES_SAMPLER_ARG=1.0
+      - AUTORIZADOR_URL=https://autorizador-simulado.dev.sefaz.interno

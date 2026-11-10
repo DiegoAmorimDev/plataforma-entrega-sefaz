@@ -1,0 +1,112 @@
+# Pipeline do repositório manifestos-apps.
+#
+# É o equivalente, no GitOps, do plano do Terraform comentado no merge request
+# (docs/06). Quem revisa lê o que vai mudar no cluster, e não só o diff do YAML:
+# três linhas no values.yaml podem mudar sonda, política de rede e limite de
+# memória ao mesmo tempo.
+#
+# Este pipeline não tem credencial de cluster. Renderizar é texto virando texto.
+
+stages:
+  - renderizacao
+  - validacao
+  - aprovacao
+
+workflow:
+  rules:
+    # Só merge request. O promotor escreve direto em main no overlay de dev, sem
+    # passar por aqui, e isso é aceito: ele altera apenas a linha do digest, e a
+    # estrutura que o digest usa já foi renderizada e validada no merge request
+    # que a introduziu.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+variables:
+  # Imagem com kustomize, helm, kubeconform e kyverno nas mesmas versões que o
+  # Argo CD usa. Versão diferente da do Argo CD renderiza diferente.
+  IMAGEM_VALIDADOR: harbor.sefaz.interno/plataforma/validador-manifestos:v3
+
+renderizar-e-comparar:
+  stage: renderizacao
+  image: ${IMAGEM_VALIDADOR}
+  tags: [kubernetes, plataforma]
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - git fetch origin "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
+    # Só os overlays que este merge request tocou, direta ou indiretamente
+    # (alterar base/values.yaml afeta todos os overlays da aplicação).
+    - /scripts/overlays-afetados.sh "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}" > overlays.txt
+    # O lado "antes" é o branch de destino, numa cópia de trabalho separada.
+    - git worktree add -q /tmp/destino "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
+    - |
+      while read -r overlay; do
+        saida="render-$(echo "${overlay}" | tr / _).yaml"
+        # Overlay novo não existe no destino: o "antes" fica vazio.
+        kustomize build --enable-helm --load-restrictor LoadRestrictionsNone \
+          "/tmp/destino/${overlay}" > /tmp/antes.yaml 2>/dev/null || : > /tmp/antes.yaml
+        kustomize build --enable-helm --load-restrictor LoadRestrictionsNone \
+          "${overlay}" > "${saida}"
+        echo "### ${overlay}" >> diferenca.txt
+        dyff between --omit-header /tmp/antes.yaml "${saida}" >> diferenca.txt
+      done < overlays.txt
+    # A diferença dos objetos finais vai como comentário no merge request.
+    - /scripts/comentar-no-mr.sh diferenca.txt
+  artifacts:
+    paths: ["render-*.yaml", diferenca.txt]
+    expire_in: 30 days
+
+validar:
+  stage: validacao
+  image: ${IMAGEM_VALIDADOR}
+  tags: [kubernetes, plataforma]
+  needs: [renderizar-e-comparar]
+  script:
+    # BLOQUEIA — manifesto que o servidor de API recusaria.
+    - kubeconform -strict -summary -schema-location default
+        -schema-location '/esquemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+        render-*.yaml
+    # BLOQUEIA — violação de política obrigatória. As mesmas políticas que o
+    # Kyverno aplica na admissão, para a violação aparecer aqui, perto de quem a
+    # causou, e não no Argo CD horas depois. Violação faz o kyverno sair com 1.
+    # Um arquivo por vez: com vários --resource por expansão, a CLI trataria do
+    # segundo em diante como caminho de política.
+    - |
+      for arquivo in render-*.yaml; do
+        kyverno apply /politicas/obrigatorias/ --resource "${arquivo}" --detailed-results
+      done
+    # BLOQUEIA — overlay de produção sem digest, ou com tag no lugar do digest.
+    - /scripts/exigir-digest.sh render-*prd*.yaml
+
+# ---------------------------------------------------------------------------
+# BLOQUEIA — mudança estrutural em produção sem aprovação da plataforma.
+#
+# Promover é trocar uma linha: o digest. Esse merge request é aprovado por duas
+# pessoas do time dono, com a evidência que o promotor anexa, e a plataforma não
+# entra no caminho de dezenas de promoções por dia (ADR-010). Se o merge request
+# alterar qualquer outra coisa num overlay de produção — versão do chart, patch,
+# recurso novo, configuração —, este job exige também uma aprovação do grupo da
+# plataforma. Sem ela, o pipeline falha e o merge fica bloqueado.
+#
+# O CODEOWNERS não resolve sozinho porque trabalha por arquivo, e o digest e o
+# patch estruturais moram no mesmo kustomization.yaml. Quando alguém aprova o
+# merge request, um gancho do GitLab reexecuta este job.
+# ---------------------------------------------------------------------------
+exigir-plataforma-se-estrutural:
+  stage: aprovacao
+  image: ${IMAGEM_VALIDADOR}
+  tags: [kubernetes, plataforma]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: ["apps/*/*/overlays/prd*/**/*"]
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - git fetch origin "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
+    # Sai com 0 se a única diferença em overlays/prd* é a linha do digest.
+    - |
+      if /scripts/so-digest-mudou.sh "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"; then
+        echo "Promoção pura: aprovação do time dono basta."
+      else
+        echo "Mudança estrutural em produção: exige aprovação da plataforma."
+        /scripts/exigir-aprovacao-de-grupo.sh "${CI_MERGE_REQUEST_IID}" SEFAZ-PLATAFORMA
+      fi

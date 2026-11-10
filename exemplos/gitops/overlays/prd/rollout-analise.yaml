@@ -1,9 +1,18 @@
-# Análise automática do canário. É isto que devolve o tráfego sozinho quando a
-# versão nova piora, sem acordar ninguém.
+# Canário com análise automática, para aplicações de nível 1. É isto que
+# devolve o tráfego sozinho quando a versão nova piora, sem acordar ninguém.
+# As demais aplicações fazem atualização gradual do Deployment, com retorno por
+# git revert.
 #
 # As duas métricas comparam a versão canário com a estável AO MESMO TEMPO, e não
 # com um limiar fixo. Limiar fixo gera falso positivo em horário de pico e falso
 # negativo de madrugada.
+#
+# A consulta vai ao Prometheus do PRÓPRIO cluster, que raspa os pods pelo
+# PodMonitor do chart. Assim o canário de prd-dc2 funciona mesmo sem DC1, e a
+# análise de um sítio nunca enxerga o canário do outro. No OpenShift, o endereço
+# é o do monitoramento de cargas do usuário, consultado com o token da conta de
+# serviço do Argo Rollouts. O rótulo sefaz_io_versao vem do rótulo de pod
+# sefaz.io/versao, que o Argo Rollouts aplica (canaryMetadata e stableMetadata).
 
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
@@ -11,73 +20,93 @@ metadata:
   name: canario-saude
 spec:
   args:
-    - name: app
     - name: namespace
 
   metrics:
-    - name: taxa-erro
+    # Reprova se a taxa de erro do canário passar de 1,5 vez a da estável.
+    # O "+ 0.001" no denominador evita divisão por zero quando a estável não
+    # tem erro nenhum: aí o canário reprova a partir de 0,15% de erro.
+    - name: taxa-erro-relativa
       interval: 1m
       count: 15                 # 15 minutos de observação
       failureLimit: 2           # duas medições ruins encerram o canário
-      initialDelay: 2m          # ignora o aquecimento da aplicação
-      successCondition: result[0] <= 0.01
+      initialDelay: 2m          # ignora o aquecimento da JVM
+      # Sem dado (resultado vazio), a medição conta como erro, não como sucesso.
+      successCondition: len(result) > 0 && result[0] <= 1.5
       provider:
         prometheus:
-          address: http://thanos-query.observabilidade:9090
+          address: http://prometheus-cluster.monitoramento:9090
           query: |
-            sum(rate(http_server_request_duration_seconds_count{
-              namespace="{{args.namespace}}",
-              app="{{args.app}}",
-              version="canary",
-              http_response_status_code=~"5.."
-            }[2m]))
+            (
+              # "or vector(0)": sem nenhum 5xx, a série não existe e a divisão
+              # devolveria vazio, o que abortaria um canário saudável.
+              (sum(rate(http_server_request_duration_seconds_count{namespace="{{args.namespace}}", sefaz_io_versao="canario", http_response_status_code=~"5.."}[2m])) or vector(0))
+              / sum(rate(http_server_request_duration_seconds_count{namespace="{{args.namespace}}", sefaz_io_versao="canario"}[2m]))
+            )
             /
-            sum(rate(http_server_request_duration_seconds_count{
-              namespace="{{args.namespace}}",
-              app="{{args.app}}",
-              version="canary"
-            }[2m]))
+            (
+              (sum(rate(http_server_request_duration_seconds_count{namespace="{{args.namespace}}", sefaz_io_versao="estavel", http_response_status_code=~"5.."}[2m])) or vector(0))
+              / sum(rate(http_server_request_duration_seconds_count{namespace="{{args.namespace}}", sefaz_io_versao="estavel"}[2m]))
+              + 0.001
+            )
 
+    # Reprova se o canário ficar 20% mais lento que a versão estável.
     - name: latencia-p95-relativa
       interval: 1m
       count: 15
       failureLimit: 3
       initialDelay: 2m
-      # Reprova se o canário ficar 20% mais lento que a versão estável.
-      successCondition: result[0] <= 1.2
+      successCondition: len(result) > 0 && result[0] <= 1.2
       provider:
         prometheus:
-          address: http://thanos-query.observabilidade:9090
+          address: http://prometheus-cluster.monitoramento:9090
           query: |
             histogram_quantile(0.95, sum by (le) (rate(
-              http_server_request_duration_seconds_bucket{
-                namespace="{{args.namespace}}", app="{{args.app}}", version="canary"
-              }[5m])))
+              http_server_request_duration_seconds_bucket{namespace="{{args.namespace}}", sefaz_io_versao="canario"}[5m])))
             /
             histogram_quantile(0.95, sum by (le) (rate(
-              http_server_request_duration_seconds_bucket{
-                namespace="{{args.namespace}}", app="{{args.app}}", version="stable"
-              }[5m])))
+              http_server_request_duration_seconds_bucket{namespace="{{args.namespace}}", sefaz_io_versao="estavel"}[5m])))
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
   name: nfe-emissor
 spec:
+  replicas: 6
+  # Voltar para uma das três últimas revisões pula os passos do canário: o
+  # retorno de versão em produção leva minutos, e não os 25 do canário.
+  rollbackWindow:
+    revisions: 3
+  # O Rollout reaproveita o Deployment gerado pelo chart, em vez de duplicar o
+  # modelo do pod. Depois da primeira promoção bem-sucedida, o Deployment fica
+  # com zero réplicas e o Rollout passa a ser dono dos pods.
+  workloadRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nfe-emissor
+    scaleDown: onsuccess
   strategy:
     canary:
-      canaryService: nfe-emissor-canary
-      stableService: nfe-emissor-stable
+      canaryService: nfe-emissor-canario
+      stableService: nfe-emissor-estavel
+      canaryMetadata:
+        labels: { sefaz.io/versao: canario }
+      stableMetadata:
+        labels: { sefaz.io/versao: estavel }
       trafficRouting:
-        # O roteador do OpenShift divide o tráfego por peso entre os dois Services.
-        openshift:
-          routes: [nfe-emissor]
+        # O roteador do OpenShift divide o tráfego por peso entre os dois
+        # Services. O suporte vem de uma extensão mantida no argoproj-labs,
+        # registrada no ConfigMap do Argo Rollouts. Se ela parar de acompanhar as
+        # versões, remover este bloco faz o canário dividir por quantidade de
+        # réplicas.
+        plugins:
+          argoproj-labs/openshift:
+            routes: [nfe-emissor]
+            namespace: fiscal-nfe-emissor-prd
       analysis:
         templates:
           - templateName: canario-saude
         args:
-          - name: app
-            value: nfe-emissor
           - name: namespace
             value: fiscal-nfe-emissor-prd
       steps:
@@ -86,6 +115,25 @@ spec:
         - setWeight: 50
         - pause: { duration: 10m }
         - setWeight: 100
-      # Falha na análise devolve 100% do tráfego à versão estável e reabre o
-      # merge request de promoção com o relatório anexado.
+      # 10% por 15 minutos com análise, 50% por 10 minutos, depois tudo. Falha
+      # na análise devolve 100% do tráfego à versão estável. A notificação do
+      # Argo CD avisa o canal do time e o estado do commit no GitLab.
       abortScaleDownDelaySeconds: 600
+---
+# Os dois Services que o canário usa. O Argo Rollouts acrescenta ao seletor de
+# cada um o hash do conjunto de pods correspondente.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nfe-emissor-estavel
+spec:
+  selector: { app.kubernetes.io/name: nfe-emissor }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nfe-emissor-canario
+spec:
+  selector: { app.kubernetes.io/name: nfe-emissor }
+  ports: [{ name: http, port: 8080, targetPort: http }]
