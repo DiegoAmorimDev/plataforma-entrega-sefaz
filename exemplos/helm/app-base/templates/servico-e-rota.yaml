@@ -1,0 +1,107 @@
+{{/*
+ServiceAccount, Service, rota de entrada e orçamento de interrupção.
+
+A rota é Route no OpenShift (homologação e produção) e Ingress no RKE2
+(desenvolvimento). O overlay diz a distribuição; o time não escreve nenhum dos
+dois. É esta diferença, e só ela, que o chart esconde (docs/02).
+*/}}
+{{- $nome := include "app-base.fullname" . -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $nome }}
+  labels: {{- include "app-base.labels" . | nindent 4 }}
+  annotations:
+    # Onda -2: o Job de migração, na onda -1, já roda com esta conta.
+    argocd.argoproj.io/sync-wave: "-2"
+# A aplicação não fala com o servidor de API nem com o Conjur.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $nome }}
+  labels: {{- include "app-base.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "app-base.selectorLabels" . | nindent 4 }}
+  ports:
+    - { name: http, port: {{ .Values.service.port }}, targetPort: http }
+{{- if .Values.rota.habilitada }}
+---
+{{- if eq .Values.distribuicao "openshift" }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ $nome }}
+  labels:
+    {{- include "app-base.labels" . | nindent 4 }}
+    # O HAProxy da borda só encaminha para rota marcada como pública.
+    sefaz.io/publica: {{ .Values.rota.publica | quote }}
+spec:
+  host: {{ required "rota.host é obrigatório" .Values.rota.host }}
+  to:
+    kind: Service
+    # Com canário, a Route aponta para o Service estável, e o Argo Rollouts
+    # divide o peso entre ele e o do canário (overlays/prd/rollout-analise).
+    name: {{ if .Values.canario.habilitado }}{{ $nome }}-estavel{{ else }}{{ $nome }}{{ end }}
+    # Sem "weight" aqui: durante o canário, quem escreve o peso é o Argo
+    # Rollouts. Peso no manifesto faria a correção de desvio devolvê-lo a 100.
+  port: { targetPort: http }
+  tls:
+    # TLS termina no roteador. Entre o roteador e o pod, a criptografia é a da
+    # rede do cluster entre nós (IPsec do OVN-Kubernetes), e não da aplicação:
+    # exigir TLS em cada pod obrigaria 60 aplicações a gerir certificado
+    # (docs/01, "Sigilo fiscal, LGPD e auditoria").
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- else }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $nome }}
+  labels: {{- include "app-base.labels" . | nindent 4 }}
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [{{ required "rota.host é obrigatório" .Values.rota.host }}]
+      secretName: {{ $nome }}-tls
+  rules:
+    - host: {{ .Values.rota.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: {{ $nome }}, port: { name: http } }
+{{- end }}
+{{- end }}
+{{- if and .Values.pdb.habilitado (gt (int .Values.replicaCount) 1) }}
+---
+# Orçamento de interrupção: a drenagem de nós para manutenção nunca derruba
+# mais da metade das réplicas ao mesmo tempo.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $nome }}
+  labels: {{- include "app-base.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable | quote }}
+  selector:
+    matchLabels: {{- include "app-base.selectorLabels" . | nindent 6 }}
+{{- end }}
+---
+# O Prometheus do cluster raspa a aplicação. O agente Java do OpenTelemetry
+# expõe a métrica na porta "metricas". Os rótulos de pod viram rótulos da
+# métrica: é assim que a análise do canário separa canário de estável.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $nome }}
+  labels: {{- include "app-base.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: {{- include "app-base.selectorLabels" . | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metricas
+      interval: 30s
+  podTargetLabels: [sefaz.io/time, sefaz.io/tier, sefaz.io/versao]

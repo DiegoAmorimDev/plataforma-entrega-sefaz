@@ -1,0 +1,155 @@
+{{/*
+Os dois ganchos que o Argo CD executa em toda sincronização, nos três
+ambientes. O caminho de produção é o mesmo de homologação e de
+desenvolvimento: homologação exercita a migração exatamente como produção.
+
+Ordem (docs/09):
+  onda -2  ServiceAccount, ExternalSecret e ConfigMap
+  onda -1  migração de banco (gancho Sync)
+  onda  0  Service, Deployment ou Rollout
+  PostSync teste de fumaça
+*/}}
+{{- $nome := include "app-base.fullname" . -}}
+{{- if .Values.migracao.habilitada }}
+# -----------------------------------------------------------------------------
+# Migração de banco, na onda anterior à da versão nova.
+#
+# Gancho da fase Sync, e não PreSync, de propósito: ganchos PreSync rodam antes
+# de TODAS as ondas, e a migração rodaria antes de o segredo e o ConfigMap
+# existirem. Na fase Sync, o gancho respeita as ondas.
+#
+# Rodar antes da versão nova só é seguro por causa do padrão expandir e
+# contrair: a etapa de expandir deixa o esquema compatível com a versão antiga
+# e com a nova. Se o Job falhar, a sincronização para e a versão anterior
+# continua servindo.
+#
+# Em produção, o Job roda nos dois sítios contra o mesmo banco. A trava do
+# Liquibase (tabela DATABASECHANGELOGLOCK) serializa os dois; o segundo
+# encontra o changelog já aplicado e termina sem fazer nada.
+#
+# Se a sincronização for repetida, o Job roda de novo, e isso é seguro pela
+# regra do template de um comando DDL por changeset: no Oracle, cada DDL se
+# confirma sozinho, então um changeset nunca fica aplicado pela metade, e o
+# Liquibase pula os que já constam como aplicados.
+#
+# O Dockerfile do template copia o changelog para /app/db/changelog: dentro do
+# JAR ele não seria legível pelo initContainer abaixo.
+# -----------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Nome fixo, de propósito. Com generateName, o kustomize recusa o objeto
+  # (exige metadata.name) e o BeforeHookCreation não acha o Job anterior para
+  # apagar. Com nome fixo, cada sincronização apaga o Job anterior e mantém o
+  # último para consulta.
+  name: {{ $nome }}-migracao
+  labels:
+    {{- include "app-base.labels" . | nindent 4 }}
+    sefaz.io/carga: tarefa
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "-1"
+    # Apaga o Job anterior antes de criar o novo; mantém o último para consulta.
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 0              # migração não é repetida às cegas
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        {{- include "app-base.labels" . | nindent 8 }}
+        sefaz.io/carga: tarefa
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $nome }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        # O changelog vem da MESMA imagem da aplicação, no mesmo digest: o que
+        # migra é o que foi testado junto com o código no teste de integração.
+        # A aplicação em si não sobe; só o arquivo é copiado.
+        - name: changelog
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          command: ["sh", "-c", "cp -r /app/db/changelog/. /changelog/"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { cpu: 200m, memory: 256Mi }
+          volumeMounts: [{ name: changelog, mountPath: /changelog }]
+      containers:
+        # Imagem do Liquibase mantida pela plataforma, com os drivers de
+        # Oracle e PostgreSQL, espelhada no Harbor.
+        - name: liquibase
+          image: harbor.sefaz.interno/plataforma/liquibase:4.29
+          args: ["--changelog-file=db.changelog-master.yaml", "--search-path=/changelog", "update"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits:   { cpu: "1",  memory: 1Gi }
+          env:
+            - name: LIQUIBASE_COMMAND_URL
+              valueFrom: { configMapKeyRef: { name: {{ $nome }}-config, key: SPRING_DATASOURCE_URL } }
+            # Usuário próprio de migração, com permissão estrutural, separado do
+            # usuário da aplicação, que só lê e escreve dados. Vem do Conjur
+            # pelo ExternalSecret de destino "migracao".
+            - name: LIQUIBASE_COMMAND_USERNAME
+              valueFrom: { secretKeyRef: { name: {{ $nome }}-migracao, key: usuario } }
+            - name: LIQUIBASE_COMMAND_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $nome }}-migracao, key: senha } }
+          volumeMounts:
+            - { name: changelog, mountPath: /changelog }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: changelog, emptyDir: { sizeLimit: 64Mi } }
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 64Mi } }
+---
+{{- end }}
+# -----------------------------------------------------------------------------
+# Teste de fumaça, depois que a sincronização terminou e a aplicação ficou
+# saudável. Falha aqui marca a sincronização como falha: o estado do commit no
+# GitLab fica vermelho e o canal do time é avisado (configuracao.yaml).
+# -----------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $nome }}-fumaca
+  labels:
+    {{- include "app-base.labels" . | nindent 4 }}
+    sefaz.io/carga: tarefa
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "app-base.labels" . | nindent 8 }}
+        sefaz.io/carga: tarefa
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: fumaca
+          image: harbor.sefaz.interno/plataforma/teste-fumaca:v3
+          # Sobe? Responde? Alcança as dependências declaradas? O script lê a
+          # sonda de prontidão, que no Spring Boot inclui o banco.
+          args: ["http://{{ $nome }}:{{ .Values.service.port }}{{ (index .Values.sondas .Values.linguagem).prontidao }}"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 50m,  memory: 64Mi }
+            limits:   { cpu: 200m, memory: 128Mi }

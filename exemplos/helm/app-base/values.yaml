@@ -1,15 +1,32 @@
 # Chart base da plataforma — valores padrão.
 #
-# O arquivo que o time escreve costuma ter menos de 20 linhas, porque só
-# sobrescreve o que é específico da aplicação.
+# O values.yaml que o time escreve, em manifestos-apps/apps/<time>/<app>/base,
+# costuma ter menos de 40 linhas, porque só sobrescreve o que é da aplicação.
+# Exemplo completo em exemplos/gitops/base/values.yaml.
 
 replicaCount: 3
-ambiente: dev
+ambiente: dev          # preenchido por cada overlay; decide o caminho do segredo
+# openshift emite Route; rke2 emite Ingress. Preenchido pelo overlay: dev é
+# rke2, hml e prd são openshift.
+distribuicao: openshift
+time: ""               # obrigatório; vem do catálogo
 tier: "3"
 
 image:
-  repository: harbor.sefaz.interno/TIME/APP
-  digest: ""          # obrigatório; o chart falha sem ele, por decisão
+  repository: app      # nome lógico; o overlay troca pelo endereço do Harbor
+  digest: ""           # obrigatório; o chart falha sem ele, por decisão
+
+# Escolhe os caminhos das sondas. java usa o Spring Boot Actuator.
+linguagem: java
+sondas:
+  java:
+    inicio:     /actuator/health/liveness
+    prontidao:  /actuator/health/readiness
+    vitalidade: /actuator/health/liveness
+  dotnet:
+    inicio:     /health/startup
+    prontidao:  /health/ready
+    vitalidade: /health/live
 
 # Sem padrão. Obrigar o time a declarar é o que faz a conversa sobre consumo
 # acontecer antes de produção, e não durante o primeiro incidente de capacidade.
@@ -27,6 +44,11 @@ rota:
   tls: true
   publica: false      # true publica no HAProxy externo
 
+# Com o canário ligado, a Route aponta para o Service estável, e o Argo Rollouts
+# divide o peso entre ele e o Service do canário (overlays/prd/rollout-analise).
+canario:
+  habilitado: false
+
 autoscaling:
   enabled: false
   minReplicas: 3
@@ -41,23 +63,32 @@ pdb:
 
 terminationGracePeriodSeconds: 45
 
-# Segredos vêm do Vault; aqui ficam apenas os caminhos, nunca os valores.
-segredos:
-  - caminho: fiscal/nfe-emissor/banco
-    chaves: [CONN_STRING, DB_USER, DB_PASSWORD]
-  - caminho: fiscal/nfe-emissor/certificado
-    chaves: [CERT_A1_PFX, CERT_A1_SENHA]
+# Migração de banco como gancho do Argo CD, na onda -1, em todos os ambientes
+# (templates/ganchos.yaml). Exige o segredo de destino "migracao".
+migracao:
+  habilitada: false
+
+# Segredos: só o caminho no Conjur e o nome da variável que a aplicação lê,
+# nunca o valor. O chart gera um ExternalSecret por destino, lendo
+# <time>/<app>/<ambiente>/<caminho>/<chave>. Destino "segredo" (padrão) vira
+# variável de ambiente da aplicação; outros destinos geram Secrets separados,
+# como o da migração de banco.
+segredos: []
+#  - caminho: banco
+#    chaves:
+#      SPRING_DATASOURCE_USERNAME: usuario
+#      SPRING_DATASOURCE_PASSWORD: senha
+
+# Intervalo em que o External Secrets confere o Conjur. A rotação pelo PAM chega
+# aos pods em, no máximo, este intervalo mais o reinício gradual do Reloader.
+segredosIntervalo: 5m
 
 observabilidade:
-  metricas: true
   tracesSampleRate: 0.01
-  logLevel: Information
 
 # Dependências declaradas viram NetworkPolicy de saída. Sem declarar, o pod não
 # alcança nada além do DNS e do coletor de telemetria.
 dependencias:
-  bancos:
-    - { tipo: oracle, host: dbfiscal.sefaz.interno, porta: 1521 }
+  bancos: []
   servicos: []
-  externos:
-    - { host: autorizador.sefaz.gov.br, porta: 443 }
+  externos: []

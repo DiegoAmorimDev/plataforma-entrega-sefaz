@@ -10,6 +10,12 @@ kind: Deployment
 metadata:
   name: {{ include "app-base.fullname" . }}
   labels: {{- include "app-base.labels" . | nindent 4 }}
+  annotations:
+    # Quando o PAM rotaciona a senha e o External Secrets atualiza o Secret, o
+    # Reloader recria os pods um a um. A conta dupla (ADR-008) garante que o pod
+    # ainda não recriado continue conectando com a conta anterior. Em produção,
+    # o Rollout lê o modelo deste Deployment, e a recriação passa pelo canário.
+    secret.reloader.stakater.com/reload: {{ include "app-base.fullname" . }}-segredo
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
@@ -24,11 +30,10 @@ spec:
     matchLabels: {{- include "app-base.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      labels: {{- include "app-base.selectorLabels" . | nindent 8 }}
-      annotations:
-        # Força a recriação do pod quando o ConfigMap muda. Sem isto, alterar
-        # configuração não tem efeito até alguém reiniciar à mão.
-        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels: {{- include "app-base.labels" . | nindent 8 }}
+      # Sem anotação de checksum de configuração: o ConfigMap vem do
+      # configMapGenerator do overlay, com sufixo calculado do conteúdo. Mudou
+      # a configuração, mudou o nome, e o pod é recriado sozinho.
     spec:
       serviceAccountName: {{ include "app-base.fullname" . }}
 
@@ -62,33 +67,39 @@ spec:
           imagePullPolicy: IfNotPresent
 
           securityContext:
+            privileged: false
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
 
           ports:
-            - { name: http,    containerPort: {{ .Values.service.port }} }
-            - { name: metrics, containerPort: 9090 }
+            - { name: http,     containerPort: {{ .Values.service.port }} }
+            - { name: metricas, containerPort: 9464 }
 
-          # As três sondas são distintas de propósito.
+          # Três sondas com papéis distintos.
           #
-          # startup  — dá tempo à aplicação lenta de subir sem que a liveness a mate.
-          # readiness — tira do balanceamento quando a dependência está ruim.
-          # liveness  — reinicia só quando o processo travou de verdade.
+          # início     — dá tempo à JVM de subir sem que a de vitalidade a mate.
+          #              Pode usar o mesmo caminho da vitalidade; o que muda é a
+          #              tolerância (30 tentativas de 5 s).
+          # prontidão  — tira do balanceamento quando a dependência está ruim.
+          #              No Spring Boot, inclui o banco.
+          # vitalidade — reinicia só quando o processo travou de verdade. No
+          #              Spring Boot, NÃO inclui o banco.
           #
-          # Usar a mesma verificação nas três é a causa clássica de reinício em
-          # cascata: o banco fica lento, a readiness falha, a liveness mata o pod,
-          # e a carga se concentra nos pods restantes até derrubar todos.
+          # Usar a verificação do banco na vitalidade é a causa clássica de
+          # reinício em cascata: o banco fica lento, todos os pods são mortos ao
+          # mesmo tempo, e a carga se concentra nos que sobram até derrubar todos.
+          {{- $sondas := index .Values.sondas .Values.linguagem }}
           startupProbe:
-            httpGet: { path: /health/startup, port: http }
+            httpGet: { path: {{ $sondas.inicio }}, port: http }
             failureThreshold: 30
             periodSeconds: 5
           readinessProbe:
-            httpGet: { path: /health/ready, port: http }
+            httpGet: { path: {{ $sondas.prontidao }}, port: http }
             periodSeconds: 5
             failureThreshold: 3
           livenessProbe:
-            httpGet: { path: /health/live, port: http }
+            httpGet: { path: {{ $sondas.vitalidade }}, port: http }
             periodSeconds: 15
             failureThreshold: 3
 
@@ -101,19 +112,35 @@ spec:
 
           # Obrigatórios. Pod sem requests faz o escalonador decidir errado e é
           # a causa mais comum de nó desequilibrado e de desalojamento em cascata.
-          resources: {{- toYaml (required "requests e limits são obrigatórios" .Values.resources) | nindent 12 }}
+          {{- if not (and .Values.resources.requests .Values.resources.limits) }}
+          {{- fail "requests e limits são obrigatórios: declare resources no values.yaml" }}
+          {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
 
           env:
-            - { name: OTEL_SERVICE_NAME,      value: {{ include "app-base.fullname" . }} }
-            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.observabilidade:4317" }
+            # O agente Java do OpenTelemetry, embutido na imagem base, lê estas
+            # variáveis. Log e trace saem por OTLP para o agente coletor do
+            # próprio nó; a métrica é exposta na porta "metricas" e raspada
+            # pelo Prometheus do cluster (PodMonitor em servico-e-rota.yaml).
+            - { name: OTEL_SERVICE_NAME,           value: {{ include "app-base.fullname" . }} }
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-agente-collector.observabilidade:4317" }
+            - { name: OTEL_METRICS_EXPORTER,       value: prometheus }
+            - { name: OTEL_EXPORTER_PROMETHEUS_PORT, value: "9464" }
+            - { name: OTEL_TRACES_SAMPLER,         value: parentbased_traceidratio }
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "service.namespace={{ .Release.Namespace }},deployment.environment={{ .Values.ambiente }},sefaz.tier={{ .Values.tier }}"
+              value: "deployment.environment={{ .Values.ambiente }},sefaz.tier={{ .Values.tier }}"
+            # Só o Job da onda -1 migra o banco; a aplicação sobe sem Liquibase.
+            - { name: SPRING_LIQUIBASE_ENABLED,    value: "false" }
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
           envFrom:
+            # Gerado pelo configMapGenerator do overlay de cada ambiente.
             - configMapRef: { name: {{ include "app-base.fullname" . }}-config }
-            # Materializado pelo External Secrets a partir do Vault.
-            - secretRef:    { name: {{ include "app-base.fullname" . }}-secret }
+            {{- if .Values.segredos }}
+            # Materializado pelo External Secrets a partir do Conjur
+            # (templates/externalsecret.yaml).
+            - secretRef:    { name: {{ include "app-base.fullname" . }}-segredo }
+            {{- end }}
 
           volumeMounts:
             # readOnlyRootFilesystem exige volume gravável explícito para temporários.
