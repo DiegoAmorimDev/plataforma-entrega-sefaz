@@ -56,10 +56,10 @@ h = h.replace(
       .replace(/&gt;/g, ">")
       .replace(/&amp;/g, "&")}</pre>`
 );
-// As figuras do draw.io entram embutidas, para o HTML não depender de caminho
+// As figuras do draw.io e a capa entram embutidas, para o HTML não depender de caminho
 // relativo: o README aponta para docs/diagramas/ e os documentos, para diagramas/.
 let figuras = 0;
-h = h.replace(/<img src="([^"]+\.drawio\.svg)"/g, (_, src) => {
+h = h.replace(/<img src="((?:docs\/)?(?:diagramas|assets)\/[^"]+\.svg)"/g, (_, src) => {
   const caminho = [src, "docs/" + src].find((c) => fs.existsSync(c));
   if (!caminho) throw new Error("figura não encontrada: " + src);
   figuras++;
