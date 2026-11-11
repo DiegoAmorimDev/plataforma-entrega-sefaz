@@ -52,9 +52,10 @@ plataforma dimensionada por chute.
   migrada sobe saudável e perde, em silêncio, a autenticação ou a URL que outros órgãos ainda
   chamam.
 - Classificação por nível de criticidade, acordada com as áreas de negócio.
-- Classificação por facilidade de migração, em três grupos: sem estado e já conteinerizável; com
-  estado em disco ou sessão, exigindo ajuste; dependente de servidor de aplicação proprietário,
-  exigindo reescrita parcial.
+- Classificação por facilidade de migração, em três classes: **A**, sem estado e já
+  conteinerizável; **B**, com estado em disco ou sessão, exigindo ajuste; **C**, dependente de
+  servidor de aplicação proprietário, exigindo reescrita parcial. A classe de cada aplicação
+  alimenta a matriz de custo, esforço e tempo (ver "Custo, esforço e tempo da migração", abaixo).
 - Medição da linha de base: tempo entre commit e produção, frequência de entrega, percentual de
   entregas com correção urgente, tempo de restauração. Sem esse número de partida, não há como
   mostrar resultado no mês 12.
@@ -67,8 +68,9 @@ plataforma dimensionada por chute.
   leva de três a seis meses e a fase 1 começa no dia 46.
 - Definição do que não entra na plataforma nesses doze meses, por escrito.
 
-**Entregável:** inventário publicado, classificação acordada, linha de base registrada, lista das
-três aplicações piloto escolhidas com os times voluntários.
+**Entregável:** inventário publicado, classificação acordada, linha de base registrada, matriz de
+custo, esforço e tempo preenchida com a contagem real de aplicações por classe, lista das três
+aplicações piloto escolhidas com os times voluntários.
 
 **Por que primeiro:** a escolha do piloto define o sucesso político do projeto. O piloto certo é
 uma aplicação de nível 2, sem estado, de um time que quer participar. Nem a mais crítica, que não
@@ -94,7 +96,9 @@ tolera erro de aprendizado, nem a mais irrelevante, cujo sucesso não convence n
 - Processo de catálogo funcionando ponta a ponta para aplicação nova.
 
 **Entregável:** as três aplicações piloto rodando em desenvolvimento, implantadas por GitOps, com
-painel e alertas, e um time conseguindo criar aplicação nova sem ajuda.
+painel e alertas, e um time conseguindo criar aplicação nova sem ajuda. O esforço gasto nos
+pilotos, medido em pessoas-dia, substitui a estimativa da classe A na matriz antes da primeira
+onda.
 
 **Por que nessa ordem:** registry e cofre vêm antes de tudo porque a esteira depende deles. O
 caminho pavimentado vem junto com o piloto, e não depois, porque é o piloto que revela se ele é
@@ -112,7 +116,7 @@ usável.
 - Plantão formalizado, com escala, roteiros de resposta e roteamento por time.
 - Alertas de orçamento de erro para as aplicações piloto.
 - Velero com backup dos quatro clusters e primeira restauração testada.
-- Primeira onda de migração: 10 aplicações sem estado, de nível 2 e 3.
+- Primeira onda de migração: 10 aplicações da classe A, de nível 2 e 3.
 
 **Entregável:** 10 aplicações em produção na plataforma nova, com retorno de versão exercitado em
 pelo menos uma delas de propósito.
@@ -144,7 +148,9 @@ regra de rota. Por isso a primeira onda tem só aplicações de nível 2 e 3, e 
   de reserva e a troca de papel testada.
 - Primeiro exercício de continuidade, com DC1 isolado de propósito.
 - Argo Rollouts com canário para as aplicações de nível 1.
-- Segunda onda de migração: mais 20 aplicações, o dobro das 10 da fase 2. O ritmo sobe porque os
+- Contagem de pontos de função das aplicações da classe C, para que a contratação da reescrita
+  corra durante a fase 4 e não segure o ano seguinte (ver "Depois do mês 12", abaixo).
+- Segunda onda de migração: mais 20 aplicações da classe A, o dobro das 10 da fase 2. O ritmo sobe porque os
   templates e o chart base já foram exercitados na primeira onda. Somadas às 10 da fase 2, são 30
   no fim da fase 3, e as de 10 a 15 da fase 4 fecham a expectativa de 40 a 45.
 
@@ -164,7 +170,7 @@ decidir alguma coisa.
 
 **O que se faz:**
 
-- Ondas finais de migração, de 10 a 15 aplicações, incluindo as que exigem ajuste de estado.
+- Ondas finais de migração, de 10 a 15 aplicações da classe B, as que exigem ajuste de estado.
 - Rateio de custo por namespace, com relatório de consumo por time.
 - Exercícios de injeção de falha em homologação, de forma controlada.
 - Avaliação do portal interno de desenvolvedor, decidida por dado de uso, não por vontade.
@@ -182,6 +188,30 @@ atraso visível no mês 10; prometer 45 e entregar 50 produz confiança.
 
 ---
 
+## Depois do mês 12: as aplicações da classe C
+
+As 15 a 20 aplicações que ficam são as da classe C, presas a servidor de aplicação proprietário.
+Elas não são abandonadas: entram num segundo ciclo, que começa a ser preparado ainda na fase 3.
+
+- **A contagem vem antes.** Os pontos de função de cada uma são contados na fase 3. A contratação
+  da reescrita, quando for por fábrica de software, passa pelo mesmo processo de compra pública de
+  três a seis meses do risco 2, e precisa estar aberta antes do mês 12.
+- **A ordem segue o retorno.** Primeiro a aplicação que libera mais custo de legado, em licença de
+  servidor de aplicação e em máquina virtual, por ponto de função reescrito. Entre duas parecidas,
+  a menor vai antes, porque termina antes e ensina a seguinte.
+- **O legado fica enxuto, não desligado.** O HAProxy continua mandando essas aplicações para o
+  legado, e as máquinas virtuais e as licenças delas seguem pagas até cada uma migrar. Esse custo
+  entra na comparação do mês 12, sem ser escondido.
+- **O prazo sai da contagem.** A proposta não fixa data para a última aplicação antes de existir
+  o tamanho de cada reescrita. A matriz da seção seguinte mostra como o prazo é calculado.
+
+> *Decisão: ordem pelo retorno financeiro por ponto de função. A alternativa é migrar primeiro a
+> aplicação mais crítica, para tirar o maior risco do legado logo. Foi descartada porque concentra
+> no início do ciclo a reescrita mais difícil, feita pela equipe com menos prática no padrão novo.
+> O custo é a aplicação crítica da classe C ser das últimas a sair do servidor proprietário.*
+
+---
+
 ## Riscos
 
 Em ordem de probabilidade multiplicada por impacto.
@@ -193,7 +223,9 @@ ninguém perceber. Tem duas faces. Quatro pessoas atendendo doze times manualmen
 para construir, e a plataforma congela no estado da fase 1. E equipe pequena com especialista único
 por área perde a única pessoa que sabe restaurar o cofre ou o banco.
 
-**Mitigação:** o autoatendimento é entregável da fase 1, não da fase 4. A terceira ocorrência do
+**Mitigação:** o autoatendimento é entregável da fase 1, não da fase 4. O chamado que sobra tem
+prazo por prioridade de impacto, e uma pessoa por semana atende a fila enquanto as demais
+constroem ([`docs/07`](07-experiencia-dev.md)). A terceira ocorrência do
 mesmo chamado vira item da fila de trabalho. O percentual de tempo da equipe gasto em chamado é medido, e
 acima de 40 por cento a migração é pausada até cair. Dupla por área desde a fase 0, roteiro de
 resposta escrito por quem não fez a instalação, rodízio de plantão e exercício de continuidade
@@ -251,8 +283,9 @@ retida por cinco anos. Revisão da área de segurança da informação antes da 
 Uma aplicação que não migra, por dependência inesperada, costuma travar a onda inteira e consumir
 semanas.
 
-**Mitigação:** cada onda tem critério de desistência declarado. Aplicação que não migra em duas
-semanas volta para a fila com o impedimento registrado, e a onda segue. O HAProxy mantendo a rota
+**Mitigação:** cada onda tem critério de desistência declarado. Aplicação que passa duas
+semanas do tempo estimado para a classe dela na matriz de custo, esforço e tempo volta para a fila
+com o impedimento registrado, e a onda segue. O HAProxy mantendo a rota
 no legado torna essa desistência barata e reversível. A lista de prontidão da onda confere que
 cada regra do Apache levantada na fase 0 já tem destino na plataforma nova; regra sem destino
 segura a aplicação no legado.
@@ -274,6 +307,113 @@ parque de 60 aplicações. Migrar sem tratar leva o problema junto.
 **Mitigação:** varredura de histórico do Git logo na fase 1, com relatório por time. Conjur e
 External Secrets disponíveis antes da primeira migração. Rotação obrigatória de toda credencial
 encontrada, porque o que esteve em repositório é considerado comprometido.
+
+---
+
+## Custo, esforço e tempo da migração
+
+A licença é o custo mais visível, e está na seção seguinte. O custo maior desta proposta é trabalho
+de gente. Ele é estimado por aplicação, com a mesma matriz para as 60: custo, esforço e tempo,
+calculados pela classe de migração da fase 0.
+
+Os números abaixo são hipótese até o piloto. Eles existem para mostrar como a conta é feita e para
+conferir se o cronograma cabe na equipe. A fase 0 troca a quantidade de cada classe pela contagem
+real, e os pilotos trocam o esforço pelo medido.
+
+### A matriz
+
+| Classe | Aplicações, hipótese | Esforço por aplicação | Dos quais, plataforma em par | Tempo por aplicação | Esforço total | Quando |
+|---|---|---|---|---|---|---|
+| A, sem estado | 30 | 8 a 12 pessoas-dia | 2 pessoas-dia | 3 semanas: 2 de trabalho e 1 de convivência com o legado | 240 a 360 pessoas-dia | Fases 2 e 3 |
+| B, com estado | 10 a 15 | 20 a 35 pessoas-dia | 4 pessoas-dia | 6 semanas: 5 de trabalho e 1 de convivência | 200 a 525 pessoas-dia | Fase 4 |
+| C, servidor proprietário | 15 a 20 | Pela contagem de pontos de função | Pela contagem | Pela contagem | Pela contagem | Depois do mês 12 |
+
+Os 8 a 12 pessoas-dia da classe A vêm destas parcelas: imagem sobre a base aprovada, 1 a 2;
+valores do chart e overlays, 1; pipeline a partir do template, 0,5 a 1; destino das regras do
+Apache levantadas na fase 0, 1 a 2; testes em homologação e ajuste de recurso, 2 a 3; corte e
+acompanhamento, 2. A classe B soma a isso a retirada da sessão de dentro da aplicação, de 5 a 10,
+a troca do arquivo em disco por armazenamento de objeto ou volume, de 5 a 10, e o teste de carga,
+de 2 a 3.
+
+### As fórmulas
+
+**Esforço** de uma onda é a soma do esforço por aplicação das classes que ela contém.
+
+**Tempo** de uma onda depende de quantas aplicações a plataforma acompanha em par ao mesmo tempo:
+
+```
+aplicações simultâneas = pessoas da plataforma em par × (dias úteis de trabalho ÷ pessoas-dia de par por aplicação)
+tempo da onda = arredondar para cima(aplicações da onda ÷ aplicações simultâneas) × tempo por aplicação
+```
+
+**Custo** em reais é o esforço vezes o valor do dia de cada perfil:
+
+```
+custo da aplicação A ou B = pessoas-dia do time × valor do dia do time
+                          + pessoas-dia da plataforma × valor do dia da plataforma
+custo da aplicação C      = pontos de função × valor do ponto de função no contrato
+custo da equipe de plataforma = 64 pessoas-mês × valor do mês do perfil
+```
+
+Os 64 pessoas-mês saem da premissa da equipe: quatro pessoas nas fases 0 e 1, que somam quatro
+meses, e seis nos oito meses seguintes. A proposta entrega as quantidades; o valor do dia, do mês e
+do ponto de função vem do contrato ou da folha da Secretaria. Escrever valor em reais aqui, sem
+esses dados, seria a precisão falsa que esta proposta evita.
+
+### A conferência do cronograma
+
+| Fase | Onda | Plataforma em par | Simultâneas | Tempo da onda | Cabe? |
+|---|---|---|---|---|---|
+| 2 | 10 aplicações A | 1 pessoa | 1 × (10 ÷ 2) = 5 | 2 ciclos × 3 semanas = 6 semanas | Sim, em 13 semanas de fase |
+| 3 | 20 aplicações A | 1 pessoa | 5 | 4 ciclos × 3 semanas = 12 semanas | Sim, no limite de 13 |
+| 4 | 10 a 15 aplicações B | 2 pessoas | 2 × (25 ÷ 4) = 12 | 1 ciclo de 6 semanas até 12 aplicações; 2 ciclos acima disso | Até 12, sim; a 13ª passa do mês 12 |
+
+A conta chega à expectativa de 40 a 45 por outro caminho: 30 aplicações A até a fase 3 e 10 a 12
+aplicações B na fase 4 dão de 40 a 42 no mês 12. De 43 a 45 só com uma terceira pessoa em par na
+fase 4, ou com aplicações B que o piloto mostre mais simples que a hipótese. As demais aplicações B
+seguem no ciclo seguinte. A fase 4 é a mais apertada também do lado dos times. No máximo da faixa, 525
+pessoas-dia em cerca de 42 dias úteis são 12 pessoas em tempo integral, quase uma por time. Se os
+times não liberarem essa gente, a fase 4 entrega 10 aplicações, e o plano continua dentro da
+expectativa declarada.
+
+A fase 3 fecha no limite. Ela carrega o segundo sítio inteiro, e a pessoa em par é uma das seis da
+equipe. Se a equipe não chegar a seis, o corte é o da premissa do README: a meta de 20 cai antes de
+qualquer item de continuidade.
+
+### Ponto de função, só para a classe C
+
+O ponto de função mede o tamanho funcional de um software, aquilo que o usuário enxerga: entradas,
+saídas, consultas e arquivos mantidos. Ele serve para a classe C porque a reescrita parcial refaz
+funcionalidade. A contagem segue o manual do IFPUG, é feita por contador certificado na fase 3 e
+usa os tipos de demanda do roteiro de métricas do contrato da Secretaria. Em contratação pública de
+software, a referência mais usada é o Roteiro de Métricas de Software do SISP. Quando a reescrita
+leva dado de um formato a outro, a funcionalidade de conversão entra na contagem, como o manual
+prevê para projeto de melhoria.
+
+Da contagem saem esforço e prazo:
+
+```
+esforço em horas = pontos de função × horas por ponto de função
+prazo em meses   = esforço em horas ÷ (pessoas alocadas × horas produtivas por mês)
+```
+
+As horas por ponto de função vêm do histórico da Secretaria ou do contrato. Como ilustração, com
+números fictícios: uma aplicação de 300 pontos de função, a 10 horas por ponto, são 3.000 horas;
+com três pessoas a 120 horas produtivas por mês, pouco mais de oito meses.
+
+> *Decisão: ponto de função só para a classe C, e pessoas-dia por classe para A, B e a construção
+> da plataforma. A alternativa é contar ponto de função para toda a migração, o que daria um número
+> único e comparável aos contratos anteriores. Foi descartada porque A e B não mudam a
+> funcionalidade da aplicação: a contagem honesta da migração delas fica perto de zero, e a contagem
+> que não fica perto de zero conta como nova uma funcionalidade que já existe. A construção da
+> plataforma é infraestrutura, que o ponto de função não mede. O custo é o plano ter duas unidades
+> de medida, e o relatório para a Secretaria precisar converter as duas em reais.*
+
+### Como a estimativa se corrige
+
+Cada onda publica o esforço estimado contra o realizado, por aplicação. Desvio acima de 30 por
+cento numa onda recalcula a matriz antes da seguinte. É o mesmo princípio dos indicadores do fim
+deste documento: o número de partida é hipótese, e o que vale é o medido.
 
 ---
 
@@ -312,9 +452,11 @@ Quatro números comparados com a linha de base da fase 0, publicados trimestralm
 | Entregas que exigiram correção urgente | Sem medição | Abaixo de 15 por cento |
 | Tempo médio de restauração | Horas | Menos de 30 minutos |
 
-Dois indicadores complementares, que medem a plataforma em vez da entrega: percentual de aplicações
-com nível de serviço declarado e com alerta funcionando, e tempo entre o pedido de aplicação nova e
-a primeira implantação em desenvolvimento, cuja meta é de um dia.
+Quatro indicadores complementares medem a plataforma em vez da entrega: percentual de aplicações
+com nível de serviço declarado e com alerta funcionando; tempo entre o pedido de aplicação nova e
+a primeira implantação em desenvolvimento, cuja meta é de um dia; cumprimento do prazo de
+atendimento por prioridade de chamado ([`docs/07`](07-experiencia-dev.md)); e esforço estimado
+contra realizado em cada onda de migração.
 
 Se esses números não melhorarem, a plataforma adicionou complexidade sem entregar benefício, e isso
 precisa aparecer no relatório tanto quanto o sucesso.

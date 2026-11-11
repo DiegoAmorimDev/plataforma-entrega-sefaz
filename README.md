@@ -159,7 +159,7 @@ enunciado, as tabelas abaixo dão a resposta curta e o link para a seção que a
 | O enunciado pede | Resposta curta | Detalhe |
 |---|---|---|
 | Como um time coloca uma aplicação nova em produção | O time abre um merge request com uma ficha de cerca de 50 linhas de configuração no catálogo. Com o merge, um pipeline cria o repositório, os namespaces, o caminho no cofre, os manifestos, o painel e os alertas, e o primeiro envio de código chega a desenvolvimento no mesmo dia. A produção recebe a aplicação por um merge request de uma linha, aprovado por duas pessoas do time | [Colocando uma aplicação nova em produção](docs/07-experiencia-dev.md#colocando-uma-aplicação-nova-em-produção) |
-| O que é da plataforma e o que é do time | A plataforma responde pelo que é comum a todas as aplicações: clusters, esteira, registry, cofre, imagem base e observabilidade. O time responde pelo que é específico da sua: código, testes, valores do chart, nível de serviço e o atendimento do alerta da própria aplicação | [Quem responde pelo quê](docs/07-experiencia-dev.md#quem-responde-pelo-quê) |
+| O que é da plataforma e o que é do time | A plataforma responde pelo que é comum a todas as aplicações: clusters, esteira, registry, cofre, imagem base e observabilidade. O time responde pelo que é específico da sua: código, testes, valores do chart, nível de serviço e o atendimento do alerta da própria aplicação. O que chega à plataforma como chamado tem prazo por prioridade de impacto, de 15 minutos para produção parada a 10 dias úteis para dúvida | [Quem responde pelo quê](docs/07-experiencia-dev.md#quem-responde-pelo-quê) · [Prazo de atendimento](docs/07-experiencia-dev.md#prazo-de-atendimento-por-prioridade) |
 
 ### 8 · Plano de evolução
 
@@ -167,7 +167,7 @@ enunciado, as tabelas abaixo dão a resposta curta e o link para a seção que a
 
 | O enunciado pede | Resposta curta | Detalhe |
 |---|---|---|
-| Roteiro em fases para 6 a 12 meses: o que vem primeiro e por quê | Cinco fases em doze meses: descoberta, fundação, produção no sítio primário com a primeira onda de 10 aplicações, segundo sítio com mais 20, e maturidade. Cada fase entrega algo verificável a um time, e a ordem segue a dependência técnica: sem registry não há GitOps. A expectativa honesta é de 40 a 45 das 60 aplicações migradas | [Visão das fases](docs/08-plano-evolucao.md#visão-das-fases) |
+| Roteiro em fases para 6 a 12 meses: o que vem primeiro e por quê | Cinco fases em doze meses: descoberta, fundação, produção no sítio primário com a primeira onda de 10 aplicações, segundo sítio com mais 20, e maturidade. Cada fase entrega algo verificável a um time, e a ordem segue a dependência técnica: sem registry não há GitOps. A expectativa honesta é de 40 a 45 das 60 aplicações migradas, conferida por uma matriz de custo, esforço e tempo por classe de migração. As restantes, presas a servidor proprietário, seguem num segundo ciclo estimado por ponto de função | [Visão das fases](docs/08-plano-evolucao.md#visão-das-fases) · [Custo, esforço e tempo](docs/08-plano-evolucao.md#custo-esforço-e-tempo-da-migração) · [Depois do mês 12](docs/08-plano-evolucao.md#depois-do-mês-12-as-aplicações-da-classe-c) |
 | Quais riscos e como mitigar | Oito riscos, cada um com a mitigação. O primeiro é a equipe de plataforma virar gargalo | [Riscos](docs/08-plano-evolucao.md#riscos) · [Como medir se deu certo](docs/08-plano-evolucao.md#como-medir-se-deu-certo) |
 
 ## Decisões de arquitetura
@@ -282,6 +282,8 @@ documento, e cada uma aponta o que mudaria se fosse falsa.
 | Os times de desenvolvimento podem assumir o plantão da própria aplicação | Se forem fábrica de software contratada, o plantão da aplicação vira cláusula de contrato ou passa à central de operações da Secretaria, com roteiro de resposta obrigatório |
 | As áreas de negócio aceitam a janela de mudança de produção em dias úteis, das 7h às 19h | A janela vira configuração por projeto no Argo CD; o desenho não muda, só o horário |
 | O vSphere existente comporta cerca de 50 máquinas virtuais novas: cerca de 680 vCPU e 2,7 TB de memória somando os cinco clusters (15 nós de controle de 8 vCPU e 32 GB, 35 nós de trabalho de 16 vCPU e 64 GB) | A compra de hospedeiros entra na fase 0, e a fase 1 desloca pelo prazo de compra pública, de três a seis meses |
+| Cerca de metade das 60 aplicações é da classe A, sem estado e já conteinerizável; 10 a 15 são da classe B, com estado; 15 a 20 são da classe C, presas a servidor de aplicação proprietário | A matriz de custo, esforço e tempo é recalculada com a contagem real da fase 0. Com menos aplicações A, as ondas das fases 2 e 3 encolhem, e a expectativa de 40 a 45 no mês 12 cai na mesma proporção |
+| A Secretaria contrata ou mede desenvolvimento por ponto de função, com valor de ponto e horas por ponto conhecidos | A reescrita da classe C passa a ser estimada em pessoas-dia, como as classes A e B, calibrada pelo piloto; a matriz não muda, só a unidade |
 | A Secretaria tem SIEM e uma ferramenta de escala de plantão com acionamento por telefone | A auditoria continua guardada com bloqueio de escrita, mas sem correlação; a chamada telefônica passa a depender de serviço contratado, viável porque o alerta não carrega dado fiscal |
 
 ## Estrutura do repositório
