@@ -252,3 +252,38 @@ intragável para quem o usa.
 > precisa estar completo; portal sobre processo instável mostra informação errada com confiança. A
 > alternativa, portal desde a fase 1, foi descartada por isso. O custo é o time navegar entre
 > GitLab, Argo CD e Grafana até lá.*
+
+### Prazo de atendimento por prioridade
+
+O chamado que sobra depois do autoatendimento tem prazo, e o prazo depende do impacto, não de quem
+pede. São quatro prioridades, publicadas no portal de chamados junto com os exemplos.
+
+| Prioridade | Quando | Exemplo | Primeira resposta | Contorno ou solução | Horário |
+|---|---|---|---|---|---|
+| P1 | Produção parada, com causa na plataforma | Roteador de `prd-dc1` sem responder; Harbor recusando imagem em produção | 15 minutos | Contorno em 4 horas | 24 horas, pelo plantão |
+| P2 | Produção degradada, ou entrega de produção bloqueada | Argo CD sem sincronizar `prd-dc2`; esteira da `main` parada para todos | 1 hora | 1 dia útil | Horário comercial |
+| P3 | Desenvolvimento ou homologação bloqueado para um time | Cota de `hml` esgotada; executor da esteira sem capacidade | 4 horas úteis | 3 dias úteis | Horário comercial |
+| P4 | Pedido ou dúvida, sem bloqueio | Campo novo no catálogo; dúvida sobre o chart base | 1 dia útil | 10 dias úteis, ou o atendimento aberto da semana | Horário comercial |
+
+Quatro regras fazem a tabela funcionar.
+
+- **A prioridade segue o impacto.** O time pode pedir reclassificação, e a plataforma decide com
+  base na tabela, não na insistência.
+- **O relógio para enquanto o chamado espera o time.** Prazo que corre durante a espera pela
+  resposta de quem pediu mede a paciência da plataforma, não o atendimento.
+- **Incidente da aplicação não é chamado da plataforma.** Quem constrói, opera: o alerta vai para o
+  time. A plataforma entra quando o time escala uma causa de infraestrutura, e o escalonamento
+  vindo de alerta de nível 1 ou 2 já chega como P1 ou P2.
+- **Uma pessoa por semana atende a fila de P3 e P4, em rodízio.** As demais constroem. Sem esse
+  rodízio, cada chamado interrompe quem estava construindo, e os doze times passam a decidir a
+  agenda da plataforma.
+
+O cumprimento do prazo é medido por prioridade e publicado todo mês. P3 e P4 fora do prazo por dois
+meses seguidos é o primeiro sinal de que a equipe virou gargalo, antes mesmo da regra dos 40 por
+cento do risco 1 em [`docs/08`](08-plano-evolucao.md).
+
+> *Decisão: prazo por prioridade de impacto. A alternativa é a fila única por ordem de chegada,
+> mais simples de explicar e de operar. Foi descartada porque, nela, a dúvida sobre o chart que
+> chegou às 9h passa na frente do Harbor parado que chegou às 9h05. O custo é o pedido sem bloqueio
+> poder levar até dez dias úteis, o que alguns times vão sentir como lentidão. O catálogo e o
+> atendimento aberto existem para que pouca coisa precise chegar a P4.*
