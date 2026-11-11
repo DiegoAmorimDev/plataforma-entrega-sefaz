@@ -61,7 +61,9 @@ metadata:
   name: {{ $nome }}
   labels: {{- include "app-base.labels" . | nindent 4 }}
 spec:
-  ingressClassName: nginx
+  # Traefik, o controlador padrão do RKE2 desde a versão 1.36. O ingress-nginx da
+  # comunidade Kubernetes foi aposentado em março de 2026 e não recebe mais correção.
+  ingressClassName: traefik
   tls:
     - hosts: [{{ required "rota.host é obrigatório" .Values.rota.host }}]
       secretName: {{ $nome }}-tls

@@ -45,6 +45,12 @@ plataforma dimensionada por chute.
 
 - Inventário das 60 aplicações: linguagem, versão de runtime, servidor de aplicação, estado,
   dependência de banco, integrações, janela de uso, consumo real medido no vSphere.
+- Inventário das regras que o Apache aplica por aplicação: reescrita e redirecionamento de URL,
+  autenticação feita antes da aplicação, cabeçalhos, limite de tamanho e conexão com o servidor de
+  aplicação, inclusive as que estão em `.htaccess`. Cada regra ganha um destino na plataforma nova
+  (Route, HAProxy, Keycloak ou o próprio código) antes da onda da aplicação. Sem isso, a aplicação
+  migrada sobe saudável e perde, em silêncio, a autenticação ou a URL que outros órgãos ainda
+  chamam.
 - Classificação por nível de criticidade, acordada com as áreas de negócio.
 - Classificação por facilidade de migração, em três grupos: sem estado e já conteinerizável; com
   estado em disco ou sessão, exigindo ajuste; dependente de servidor de aplicação proprietário,
@@ -247,7 +253,9 @@ semanas.
 
 **Mitigação:** cada onda tem critério de desistência declarado. Aplicação que não migra em duas
 semanas volta para a fila com o impedimento registrado, e a onda segue. O HAProxy mantendo a rota
-no legado torna essa desistência barata e reversível.
+no legado torna essa desistência barata e reversível. A lista de prontidão da onda confere que
+cada regra do Apache levantada na fase 0 já tem destino na plataforma nova; regra sem destino
+segura a aplicação no legado.
 
 ### Risco 7: defasagem de conhecimento
 
