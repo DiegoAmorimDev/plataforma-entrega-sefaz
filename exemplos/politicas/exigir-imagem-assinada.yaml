@@ -5,6 +5,16 @@
 # Toda política entra primeiro em modo Audit por 30 dias, com relatório por
 # time. Só depois vira Enforce. Ligar Enforce de uma vez num parque de 60
 # aplicações quebra entrega de gente que não foi avisada.
+#
+# Escopo: só namespaces de aplicação, marcados pelo processo de catálogo com o
+# rótulo sefaz.io/aplicacao=true. Namespaces do sistema (openshift-*, kube-*,
+# o próprio Kyverno, o Argo CD) ficam fora; aplicar regra de aplicação neles
+# recusaria componente da plataforma e pode travar o próprio cluster.
+#
+# Os mesmos arquivos são aplicados nos quatro clusters de execução. O que muda
+# por ambiente é o seletor: origem e assinatura são obrigatórias em homologação
+# e produção, e em desenvolvimento ficam em auditoria, porque lá o time pode
+# aplicar manifesto direto para experimentar (docs/02).
 
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
@@ -17,7 +27,6 @@ metadata:
       responde à auditoria: o que está em produção é o que passou pelos
       controles.
 spec:
-  validationFailureAction: Enforce
   background: true
   webhookTimeoutSeconds: 10
   failurePolicy: Fail      # indisponibilidade do Kyverno impede admissão, não libera
@@ -28,64 +37,100 @@ spec:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: ["*-prd", "*-hml"]
+              namespaceSelector:
+                matchExpressions:
+                  - { key: sefaz.io/aplicacao, operator: In, values: ["true"] }
+                  - { key: sefaz.io/ambiente,  operator: In, values: [hml, prd] }
       validate:
+        failureAction: Enforce
         message: "Imagem precisa vir de harbor.sefaz.interno."
-        pattern:
-          spec:
-            containers:
-              - image: "harbor.sefaz.interno/*"
+        foreach:
+          - list: "request.object.spec.[initContainers, containers][]"
+            pattern:
+              image: "harbor.sefaz.interno/*"
 
     - name: assinatura-da-esteira
       match:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: ["*-prd"]
+              namespaceSelector:
+                matchExpressions:
+                  - { key: sefaz.io/aplicacao, operator: In, values: ["true"] }
+                  - { key: sefaz.io/ambiente,  operator: In, values: [hml, prd] }
       verifyImages:
         - imageReferences: ["harbor.sefaz.interno/*"]
           failureAction: Enforce
-          # Grava o digest resolvido no pod. Mesmo que alguém use tag, o que
-          # executa fica registrado por conteúdo.
-          mutateDigest: true
+          # Desligado de propósito. Com mutateDigest: true, o Kyverno trocaria a
+          # tag por digest ANTES da regra digest-nao-tag, que então passaria
+          # para toda imagem assinada, e a recusa de tag deixaria de existir.
+          # O custo: nenhuma imagem de ferramenta pode usar tag. Por isso o
+          # Liquibase e o teste de fumaça do chart também vão por digest.
+          mutateDigest: false
           required: true
+          # O projeto do time no Harbor é privado: o Kyverno precisa de
+          # credencial de leitura para buscar a assinatura. O Secret
+          # harbor-leitura fica no namespace do Kyverno, vindo do Conjur pelo
+          # External Secrets, e a CA corporativa entra pela configuração do
+          # controlador de admissão. Sem isto, com failurePolicy: Fail, o
+          # Kyverno recusaria todo pod.
+          imageRegistryCredentials:
+            secrets: [harbor-leitura]
+            allowInsecureRegistry: false
           attestors:
             - entries:
                 - keys:
+                    # A chave pública correspondente à privada guardada no
+                    # Conjur e usada pelo job de assinatura (ADR-008).
                     publicKeys: |-
                       -----BEGIN PUBLIC KEY-----
                       MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...chave-publica-da-esteira...
                       -----END PUBLIC KEY-----
+                    # Rede fechada: a esteira assina sem publicar no registro
+                    # público de transparência (Rekor). Sem estas duas linhas,
+                    # o Kyverno exigiria a entrada pública e recusaria todo pod.
+                    rekor: { ignoreTlog: true }
+                    ctlog: { ignoreSCT: true }
 
     - name: digest-nao-tag
       match:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: ["*-prd"]
+              namespaceSelector:
+                matchExpressions:
+                  - { key: sefaz.io/aplicacao, operator: In, values: ["true"] }
+                  - { key: sefaz.io/ambiente,  operator: In, values: [hml, prd] }
       validate:
+        failureAction: Enforce
         message: >-
-          Em produção, a imagem precisa ser referenciada por digest (@sha256:),
-          não por tag. Tag é ponteiro mutável e pode ser reapontada.
-        pattern:
-          spec:
-            containers:
-              - image: "*@sha256:*"
+          Em homologação e produção, a imagem precisa ser referenciada por
+          digest (@sha256:), não por tag. Tag é ponteiro mutável e pode ser
+          reapontada. A regra recusa de fato, porque a assinatura acima não
+          reescreve tag em digest (mutateDigest: false).
+        foreach:
+          - list: "request.object.spec.[initContainers, containers][]"
+            pattern:
+              image: "*@sha256:*"
 ---
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
   name: linha-de-base-do-pod
 spec:
-  validationFailureAction: Enforce
   background: true
   rules:
     - name: recursos-declarados
       match:
-        any: [{ resources: { kinds: [Pod] } }]
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaceSelector:
+                matchLabels: { sefaz.io/aplicacao: "true" }
       validate:
+        failureAction: Enforce
         message: >-
-          Declare requests e limits de cpu e memória. Pod sem requests faz o
+          Declare requests e limits de memória. Pod sem requests faz o
           escalonador decidir errado e é a causa mais comum de nó
           desequilibrado.
         foreach:
@@ -105,25 +150,45 @@ spec:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: ["*-prd", "*-hml"]
+              namespaceSelector:
+                matchExpressions:
+                  - { key: sefaz.io/aplicacao, operator: In, values: ["true"] }
+                  - { key: sefaz.io/ambiente,  operator: In, values: [hml, prd] }
+      # Pod criado por Job (migração, teste de fumaça) termina sozinho e não tem
+      # sonda. A exceção é pelo dono do pod, e não por rótulo, que qualquer
+      # time poderia colar no próprio Deployment para escapar da regra.
+      preconditions:
+        all:
+          - key: "{{ request.object.metadata.ownerReferences[0].kind || '' }}"
+            operator: NotEquals
+            value: Job
       validate:
-        message: "Defina readinessProbe e livenessProbe, com verificações distintas."
+        failureAction: Enforce
+        message: "Defina readinessProbe e livenessProbe."
         foreach:
           - list: "request.object.spec.containers"
             pattern:
-              readinessProbe: { "?*": "?*" }
-              livenessProbe:  { "?*": "?*" }
+              readinessProbe: { periodSeconds: ">0" }
+              livenessProbe:  { periodSeconds: ">0" }
 
     - name: sem-privilegio
       match:
-        any: [{ resources: { kinds: [Pod] } }]
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaceSelector:
+                matchLabels: { sefaz.io/aplicacao: "true" }
       validate:
+        failureAction: Enforce
         message: "Contêiner privilegiado ou com escalonamento de privilégio não é admitido."
         foreach:
-          - list: "request.object.spec.containers"
+          - list: "request.object.spec.[initContainers, containers][]"
             pattern:
               securityContext:
-                privileged: "false"
+                # =( ) é âncora condicional: SE o campo existir, precisa ser
+                # false. O padrão do Kubernetes já é não privilegiado, e exigir
+                # o campo explícito recusaria pods corretos.
+                =(privileged): "false"
                 allowPrivilegeEscalation: "false"
 ---
 # Em modo auditoria: coleta evidência antes de obrigar. O relatório por time
@@ -134,15 +199,19 @@ kind: ClusterPolicy
 metadata:
   name: auditoria-raiz-somente-leitura
   annotations:
-    sefaz.io/vira-enforce-em: "2026-09-01"
+    sefaz.io/vira-enforce-em: "fim da fase 2, depois de 30 dias de relatório"
 spec:
-  validationFailureAction: Audit
   background: true
   rules:
     - name: sistema-de-arquivos-raiz-somente-leitura
       match:
-        any: [{ resources: { kinds: [Pod] } }]
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaceSelector:
+                matchLabels: { sefaz.io/aplicacao: "true" }
       validate:
+        failureAction: Audit
         message: "Use readOnlyRootFilesystem com volume temporário declarado."
         foreach:
           - list: "request.object.spec.containers"

@@ -3,24 +3,40 @@
 # Aqui termina o pipeline e começa o GitOps. Nenhum job abaixo tem kubeconfig,
 # e os runners restritos não têm rota de rede até o servidor de API dos clusters.
 # A implantação acontece porque o Argo CD observa o repositório de manifestos.
+#
+# Quem altera o digest é este script, e não o Argo CD Image Updater nem o Kargo
+# (ADR-010): a regra de promoção é "passou na etapa anterior", não "é a mais nova".
 
 .promover:
-  extends: .runner-restrito
+  extends: [.runner-restrito, .identidade-conjur]
   image: ${REGISTRY}/plataforma/promotor:v3
   variables:
     GIT_STRATEGY: none
   script:
+    # Token de escrita em manifestos-apps, lido do Conjur pela identidade do job.
+    # A política só o entrega a job de branch protegido, de projeto autorizado.
+    #
+    # O token NÃO é limitado por caminho: quem controla o .gitlab-ci.yml do
+    # próprio projeto poderia trocar o script e editar overlays/prd direto em
+    # main. Quem limita é o repositório de manifestos: o CODEOWNERS dá dono a
+    # apps/*/*/overlays/hml*/ e apps/*/*/overlays/prd*/, e a proteção de main exige
+    # aprovação de code owner. O GitLab recusa o push direto que toque esses
+    # arquivos. O push direto só alcança overlays/dev/ (docs/06).
+    - TOKEN_MANIFESTOS="$(conjur-segredo plataforma/esteira/token-manifestos)"
     - git clone "https://promotor:${TOKEN_MANIFESTOS}@${REPO_MANIFESTOS}" /repo
     - cd "/repo/apps/${APP_TIME}/${APP_NAME}/overlays/${AMBIENTE_DESTINO}"
 
     # A promoção move o digest. Nunca reconstrói, nunca reescreve tag.
     - |
+      export COMENTARIO="${VERSAO_APP}, ${CI_COMMIT_SHORT_SHA}, ${ETAPA} em $(date +'%d/%m %H:%M')"
       yq -i '
         .images[0].digest = strenv(IMAGEM_DIGEST) |
         .images[0].digest line_comment = strenv(COMENTARIO)
       ' kustomization.yaml
 
-    - git -C /repo commit -am "promove ${APP_NAME} para ${AMBIENTE_DESTINO}: ${IMAGEM_DIGEST}"
+    # Mensagem padronizada: torna o histórico de main filtrável por aplicação,
+    # ambiente e digest (ADR-011).
+    - git -C /repo commit -am "promove ${APP_TIME}/${APP_NAME} para ${AMBIENTE_DESTINO}: ${IMAGEM_DIGEST}"
 
 # ---------------------------------------------------------------------------
 # dev — empurra direto. Erro em dev custa pouco e o retorno é rápido.
@@ -28,38 +44,114 @@
 promover-dev:
   extends: .promover
   stage: promocao
-  needs: [assinar-imagem]
+  needs: [compilar, construir-imagem, assinar-imagem]
   variables:
     AMBIENTE_DESTINO: dev
-    COMENTARIO: "${CI_COMMIT_SHORT_SHA} em ${CI_PIPELINE_CREATED_AT}"
+    ETAPA: "em dev desde"
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   script:
     - !reference [.promover, script]
-    - git -C /repo push origin main
+    # O push direto compete com outros promotores (ADR-011). Antes de cada
+    # tentativa, rebase sobre main; depois de três falhas, o job falha.
+    - |
+      publicado=0
+      for tentativa in 1 2 3; do
+        if git -C /repo pull --rebase origin main && git -C /repo push origin main; then
+          publicado=1
+          break
+        fi
+        sleep $((tentativa * 3))
+      done
+      [ "${publicado}" = 1 ] || { echo "main avançou durante as 3 tentativas de push" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-# hml — abre merge request com aprovação automática quando o teste de fumaça
-# em dev passou. O registro fica no histórico do Git, não num log de pipeline.
+# hml — abre merge request que se aprova sozinho quando o pipeline dele passa,
+# depois que a versão estiver saudável em dev e o teste de fumaça aprovar.
+# A evidência vai na descrição do merge request, não num log de pipeline.
 # ---------------------------------------------------------------------------
 promover-hml:
   extends: .promover
   stage: promocao
-  needs: [promover-dev]
+  needs: [compilar, construir-imagem, promover-dev]
   variables:
     AMBIENTE_DESTINO: hml
-    COMENTARIO: "${CI_COMMIT_SHORT_SHA}, validado em dev"
+    ETAPA: "validado em dev"
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-      when: on_success
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   script:
-    - /scripts/aguardar-saude-argo.sh "${APP_NAME}-dev" --timeout 600
+    # Espera o Argo CD declarar a aplicação sincronizada e saudável em dev. A
+    # consulta é de leitura, pela API do Argo CD, com token só de leitura.
+    # Espera a Application de dev chegar a ESTE digest, e não só ficar saudável:
+    # saudável com a versão anterior não prova nada.
+    - /scripts/aguardar-saude-argo.sh "${APP_NAME}-dev-dc1" --digest "${IMAGEM_DIGEST}" --timeout 600
     - /scripts/teste-fumaca.sh "https://${APP_NAME}.dev.sefaz.interno"
     - !reference [.promover, script]
     - git -C /repo push origin "HEAD:promove-${APP_NAME}-hml-${CI_COMMIT_SHORT_SHA}"
         -o merge_request.create
         -o merge_request.target=main
-        -o merge_request.merge_when_pipeline_succeeds
+        -o merge_request.description="Fumaça aprovada em dev. Evidência no job ${CI_JOB_URL}"
+    # O repositório usa merge por avanço rápido, e main avança a cada promoção
+    # para dev: o merge request nasce atrás de main e o GitLab não faz o rebase
+    # sozinho. O job pede o rebase pela API e só depois liga o merge automático.
+    - |
+      API="https://git.sefaz.interno/api/v4/projects/plataforma%2Fmanifestos-apps"
+      CAB="PRIVATE-TOKEN: ${TOKEN_MANIFESTOS}"
+      IID="$(curl -sf --header "${CAB}" "${API}/merge_requests?state=opened&source_branch=promove-${APP_NAME}-hml-${CI_COMMIT_SHORT_SHA}" | jq -r '.[0].iid')"
+      curl -sf --request PUT --header "${CAB}" "${API}/merge_requests/${IID}/rebase"
+      # O rebase é assíncrono: espera terminar antes de ligar o merge.
+      for _ in $(seq 1 30); do
+        [ "$(curl -sf --header "${CAB}" "${API}/merge_requests/${IID}?include_rebase_in_progress=true" | jq -r '.rebase_in_progress')" = "false" ] && break
+        sleep 2
+      done
+      curl -sf --request PUT --header "${CAB}" "${API}/merge_requests/${IID}/merge" --data "auto_merge=true"
+
+# ---------------------------------------------------------------------------
+# Depois da sincronização em hml: o que só faz sentido contra a aplicação
+# implantada, com as integrações reais de homologação.
+# ---------------------------------------------------------------------------
+fumaca-e-ponta-a-ponta-hml:
+  extends: .runner-comum
+  stage: pos-implantacao
+  needs: [promover-hml]
+  image: ${REGISTRY}/plataforma/testes-pos-implantacao:v3
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
+  script:
+    - /scripts/aguardar-saude-argo.sh "${APP_NAME}-hml-dc1" --digest "${IMAGEM_DIGEST}" --timeout 1800
+    - /scripts/teste-fumaca.sh "https://${APP_NAME}.hml.sefaz.interno"
+    - /scripts/suite-ponta-a-ponta.sh "${APP_NAME}"     # suíte mantida pelo time
+  allow_failure: false   # BLOQUEIA a promoção para produção
+
+carga-hml:
+  extends: .runner-comum
+  stage: pos-implantacao
+  needs: [fumaca-e-ponta-a-ponta-hml]
+  image: ${REGISTRY}/proxy/grafana/k6:0.54.0
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
+  script:
+    # Compara latência p95 e consumo com a versão anterior. Sem série histórica,
+    # o resultado é ruído: informa até a fase 3, quando passa a bloquear.
+    - k6 run --out json=carga.json testes/carga.js
+  allow_failure: true    # INFORMA
+  artifacts:
+    paths: [carga.json]
+
+varredura-dinamica-hml:
+  extends: .runner-comum
+  stage: pos-implantacao
+  needs: [fumaca-e-ponta-a-ponta-hml]
+  image: ${REGISTRY}/proxy/zaproxy/zap-stable:2.15.0
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
+  script:
+    # Varredura de base, sem ataque ativo. Falso positivo até ser calibrada por
+    # aplicação. Abre item de acompanhamento e não reprova.
+    - zap-baseline.py -t "https://${APP_NAME}.hml.sefaz.interno" -r zap.html -I
+  allow_failure: true    # INFORMA
+  artifacts:
+    paths: [zap.html]
 
 # ---------------------------------------------------------------------------
 # prd — manual, com duas aprovações humanas no merge request e janela de
@@ -69,18 +161,17 @@ promover-hml:
 # ---------------------------------------------------------------------------
 promover-prd:
   extends: .promover
-  stage: promocao
-  needs: [promover-hml]
+  stage: pos-implantacao
+  needs: [compilar, construir-imagem, fumaca-e-ponta-a-ponta-hml]
   when: manual
   allow_failure: false
   environment:
     name: producao
-    url: https://${APP_NAME}.sefaz.gov.br
   variables:
     AMBIENTE_DESTINO: prd
-    COMENTARIO: "${CI_COMMIT_SHORT_SHA}, validado em hml"
+    ETAPA: "validado em hml desde"
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   script:
     - /scripts/verificar-permanencia-hml.sh "${APP_NAME}" --minimo-horas 24
     - !reference [.promover, script]
@@ -88,4 +179,4 @@ promover-prd:
         -o merge_request.create
         -o merge_request.target=main
         -o merge_request.title="Promove ${APP_NAME} para produção"
-        -o merge_request.description="Digest ${IMAGEM_DIGEST}. Exige duas aprovações."
+        -o merge_request.description="Digest ${IMAGEM_DIGEST}. Estável em hml há 24 h. Aprovam duas pessoas do time dono, e a plataforma só se o merge request alterar algo além do digest."

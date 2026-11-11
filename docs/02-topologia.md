@@ -11,42 +11,53 @@ Em plataforma que hospeda dado fiscal, esses quatro casos importam mais que a ec
 
 | Cluster | Sítio | Distribuição | Papel | Nós de controle | Nós de trabalho |
 |---|---|---|---|---|---|
-| `plat-dc1` | DC1 | OpenShift | Esteira, registry, cofre, observabilidade, Argo CD | 3 | 6 |
+| `plat-dc1` | DC1 | OpenShift | Esteira, registry, observabilidade, Argo CD | 3 | 6 |
 | `dev-dc1` | DC1 | RKE2 sob Rancher | Desenvolvimento dos 12 times | 3 | 4 |
-| `hml-dc1` | DC1 | OpenShift | Homologação, espelho de configuração da produção | 3 | 6 |
+| `hml-dc1` | DC1 | OpenShift | Homologação, espelho de configuração da produção | 3 | 4 |
 | `prd-dc1` | DC1 | OpenShift | Produção, sítio primário | 3 | 12 |
-| `prd-dc2` | DC2 | OpenShift | Produção, sítio secundário | 3 | 12 |
+| `prd-dc2` | DC2 | OpenShift | Produção, sítio secundário | 3 | 9 |
 
-Os números de nó são ponto de partida, a ser revisto com o inventário de consumo real das 60
-aplicações, levantado na fase de descoberta. O que não é negociável é o três em nó de controle:
-abaixo disso o etcd perde quórum com uma única falha.
+Nó de controle tem 8 vCPU e 32 GB; nó de trabalho, 16 vCPU e 64 GB. Homologação tem um terço dos
+nós de trabalho de `prd-dc1`, com a mesma configuração por nó. `prd-dc2` tem 75 por cento (9 de 12
+nós de trabalho) da capacidade de `prd-dc1`, o que cobre o nível 1 e o nível 2 com as aplicações
+suspensíveis desligadas ([`docs/05`](05-resiliencia.md)).
 
-```mermaid
-flowchart LR
-    subgraph DC1["Datacenter 1 — primário"]
-        PLAT["plat-dc1<br/>OpenShift<br/>esteira e observabilidade"]
-        DEV["dev-dc1<br/>RKE2 sob Rancher<br/>desenvolvimento"]
-        HML["hml-dc1<br/>OpenShift<br/>homologação"]
-        PRD1["prd-dc1<br/>OpenShift<br/>produção ativa"]
-    end
+**De onde vêm os 12 nós de `prd-dc1`.** A premissa é uma requisição média de 0,5 vCPU e 2 GB por
+réplica, com três réplicas em média por aplicação: 60 aplicações dão cerca de 180 réplicas, ou 90
+vCPU e 360 GB. Um nó de 16 vCPU e 64 GB oferece cerca de 12 vCPU e 48 GB aproveitáveis depois da
+reserva do sistema. A margem é perder um rack, que é um terço dos nós: os dois terços restantes
+precisam carregar tudo. Com 12 nós, os 8 que sobram oferecem 96 vCPU e 384 GB, e a conta fecha. Com
+11, a memória não fecha. O consumo medido na fase 0 troca a premissa por número.
 
-    subgraph DC2["Datacenter 2 — secundário"]
-        PRD2["prd-dc2<br/>OpenShift<br/>produção em espera quente"]
-        REP["Harbor réplica<br/>GitLab secundário<br/>MinIO espelhado"]
-    end
+Os números são ponto de partida, a ser revisto com o inventário de consumo real das 60 aplicações,
+levantado na fase de descoberta. Somados os cinco clusters, são cerca de 50 máquinas virtuais novas,
+15 nós de controle e 35 de trabalho, com cerca de 680 vCPU e 2,7 TB de memória, premissa de
+capacidade do vSphere existente que está na tabela do README. O que não é negociável é o três em nó de controle: abaixo disso o
+etcd perde quórum com uma única falha.
 
-    PLAT -->|Argo CD| DEV
-    PLAT -->|Argo CD| HML
-    PLAT -->|Argo CD| PRD1
-    PLAT -->|Argo CD| PRD2
-    PLAT -.->|replicação contínua| REP
-    REP -.->|pull de imagem| PRD2
+Fora da tabela, em máquina virtual ou em equipamento, ficam estas peças:
 
-    classDef p fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
-    classDef e fill:#1f4a3d,stroke:#7fc8ab,color:#eafaf3
-    class PLAT,REP p
-    class DEV,HML,PRD1,PRD2 e
-```
+- **Os bancos e o Conjur.** O cofre tem líder e réplica de espera em DC1, réplica de espera e
+  réplica de leitura em DC2. Ele não roda em nenhum dos cinco clusters porque é necessário para
+  reconstruir qualquer um deles. O etcd do Patroni são três máquinas pequenas em DC1, mais uma de
+  DC2 desligada, que entra no roteiro de promoção ([`docs/05`](05-resiliencia.md)). O banco de
+  homologação fica numa máquina virtual na zona de banco de DC1, na VLAN de homologação.
+- **Os pares de HAProxy**, um por sítio. Firewall e WAF são equipamento da equipe de rede, na
+  entrada de cada sítio, antes do par de HAProxy. O Apache e o legado existem nos dois sítios, com
+  o Apache de DC2 como reserva, como mostra [`exemplos/borda/haproxy.cfg`](../exemplos/borda/haproxy.cfg).
+- **O Rancher**, em três máquinas virtuais próprias em DC1, num RKE2 de gestão que não hospeda
+  aplicação e por isso não conta entre os cinco clusters. A alternativa descartada é instalá-lo no
+  `plat-dc1`, que é OpenShift e não é plataforma suportada pelo Rancher. O custo é manter três
+  máquinas a mais para atualizar.
+- **O Keycloak**, que roda no `plat-dc1`, com uma instância em máquina virtual em DC2.
+- **As réplicas de plataforma em DC2**: o GitLab secundário, a réplica do Harbor e o MinIO
+  espelhado. DC2 não tem cluster de plataforma; essas três peças rodam em máquinas virtuais
+  dedicadas, instaladas pelos instaladores oficiais de cada produto para máquina virtual. O Argo
+  CD de contingência é a exceção: fica dentro de `prd-dc2`, desligado (ADR-009).
+
+**Figura 2.1 — Topologia física dos dois datacenters.**
+
+![Topologia física: zonas de borda, plataforma, desenvolvimento, homologação, produção e banco em cada datacenter, com a quantidade de nós de controle e de trabalho de cada cluster](diagramas/topologia.drawio.svg)
 
 ---
 
@@ -67,10 +78,13 @@ mesma versão, mesmas políticas de admissão, mesmo controlador de entrada, mes
 muda é a quantidade de réplicas e a capacidade dos nós. Essa igualdade é o que torna o resultado da
 homologação uma evidência útil.
 
-**`prd-dc1` e `prd-dc2` existem separados, e não como um cluster esticado entre sítios.** Um
-cluster esticado coloca o quórum do etcd dependendo do enlace entre datacenters: uma oscilação de
-rede de trinta segundos vira perda de plano de controle nos dois lados. Dois clusters independentes
-trocam essa fragilidade por um custo de operação maior, que é pagar duas atualizações em vez de uma.
+**`prd-dc1` e `prd-dc2` existem separados, e não como um cluster esticado entre sítios.** O etcd
+de três membros precisa de maioria, e dois sítios não dividem três membros por igual: um fica com
+dois, o outro com um. Se cair o sítio que tem os dois, o sobrevivente fica sem quórum e não aceita
+nenhuma mudança, justamente na contingência. Se o enlace cair com os dois vivos, o sítio com um
+membro congela, e a oscilação do enlace provoca trocas de líder que instabilizam o cluster inteiro.
+Dois clusters independentes trocam essa fragilidade por um custo de operação maior, que é pagar
+duas atualizações em vez de uma.
 
 > *Decisão: produção é dois clusters independentes, um por sítio, em vez de um cluster esticado.
 > O critério que inverteria a escolha é enlace com latência abaixo de 2 ms e três sítios para o
@@ -92,12 +106,16 @@ A separação acontece em quatro camadas ao mesmo tempo. Nenhuma delas sozinha �
 
 A regra de permissão em produção é a mais importante e a mais difícil de sustentar politicamente.
 **Em `prd-dc1` e `prd-dc2`, nenhuma pessoa tem permissão de escrita no estado da aplicação.** O
-acesso humano é de leitura, com elevação temporária registrada para incidente. Quem quiser mudar
-produção abre merge request no repositório de manifestos.
+acesso humano é de leitura. Durante um incidente, o plantão age sobre o processo pelo Argo CD
+(sincronizar, desligar a sincronização de uma aplicação, voltar à versão anterior), com registro,
+e não edita objeto à mão ([`docs/09`](09-gitops-argocd.md)). Quem quiser mudar produção abre merge
+request no repositório de manifestos.
 
-A anonimização da massa de homologação não é detalhe. Dado fiscal copiado para um ambiente com
-permissão mais larga é incidente de privacidade esperando acontecer. A rotina de carga mascara
-documento, nome e valor antes da restauração, e roda como job agendado no cluster de plataforma.
+A massa de homologação é anonimizada porque dado fiscal copiado para um ambiente com permissão mais
+larga é incidente de privacidade esperando acontecer. A rotina de carga mascara documento, nome e
+valor antes da restauração. Ela roda numa máquina virtual dedicada, na zona de banco, operada pela
+equipe de banco, e não em nenhum cluster: o cluster de plataforma executa build de código dos
+doze times e não pode ter rota até o banco de produção.
 
 ---
 
@@ -107,7 +125,7 @@ Cada aplicação tem um namespace por ambiente, nomeado `<sigla-do-time>-<aplica
 Doze times e sessenta aplicações dão cerca de cento e oitenta namespaces somados os três ambientes,
 o que é tranquilo para um cluster do porte proposto.
 
-Cada namespace nasce com cinco objetos, criados pelo mesmo processo que cria o namespace:
+Cada namespace nasce com seis objetos, criados pelo mesmo processo que cria o namespace:
 
 - **ResourceQuota**, que limita CPU, memória e quantidade de objetos. Sem ela, uma aplicação com
   vazamento de memória consome o nó e derruba as vizinhas.
@@ -116,12 +134,17 @@ Cada namespace nasce com cinco objetos, criados pelo mesmo processo que cria o n
 - **NetworkPolicy** de negação por padrão, que bloqueia todo tráfego de entrada e libera apenas o
   controlador de entrada e os namespaces declarados como dependência.
 - **RoleBinding** ligado ao grupo do diretório corporativo do time dono.
-- **ServiceAccount** com vínculo ao Vault, para que o External Secrets obtenha segredo sem
-  credencial estática.
+- **ServiceAccount** `conjur-leitor`, registrada como identidade no Conjur, para que o External
+  Secrets obtenha segredo apresentando o token dela, sem credencial estática. A política do Conjur
+  só deixa essa identidade ler os caminhos da aplicação naquele ambiente.
+- **SecretStore** que liga o namespace ao Conjur por essa identidade. O time não pode criá-lo nem
+  alterá-lo; se pudesse, apontaria para outra identidade
+  ([`exemplos/segredos/`](../exemplos/segredos/)).
 
 > *Decisão: a negação por padrão na rede entra desde o primeiro namespace, e não como endurecimento
 > posterior. Ligar negação por padrão num cluster que já tem tráfego implícito entre sessenta
-> aplicações exige mapear dependências que ninguém documentou.*
+> aplicações exige mapear dependências que ninguém documentou. O custo é atrito na primeira semana
+> de cada aplicação: toda dependência precisa estar declarada no catálogo antes de funcionar.*
 
 A classificação de criticidade da aplicação, declarada no catálogo, define onde o pod pode rodar.
 Aplicações de nível 1 recebem tolerância para um conjunto de nós reservado, com hardware melhor e
@@ -134,8 +157,9 @@ campo que dispara isso.
 ## Distribuição dos nós dentro do sítio
 
 Dentro de `prd-dc1`, os doze nós de trabalho não podem viver no mesmo hospedeiro físico nem no
-mesmo chassi. A regra de anti-afinidade do vSphere espalha as máquinas virtuais, e a restrição de
-dispersão topológica do Kubernetes espalha os pods sobre essas máquinas.
+mesmo chassi. Nos clusters OpenShift, quem espalha as máquinas virtuais são os domínios de falha do
+vSphere, declarados na instalação ([`docs/06`](06-iac.md)); no RKE2, uma regra de anti-afinidade do
+vSphere. A restrição de dispersão topológica do Kubernetes espalha os pods sobre essas máquinas.
 
 Cada nó recebe rótulo de zona conforme o rack onde está o hospedeiro:
 
@@ -143,8 +167,10 @@ Cada nó recebe rótulo de zona conforme o rack onde está o hospedeiro:
 topology.kubernetes.io/zone: dc1-rack-a
 ```
 
-Com esse rótulo, uma aplicação com três réplicas fica obrigada a ter uma em cada rack. Perder um
-rack inteiro remove um terço da capacidade, não a aplicação. O chart base aplica essa restrição sem
+Com esse rótulo, uma aplicação com três réplicas fica com uma em cada rack sempre que houver
+capacidade. Perder um rack inteiro remove um terço da capacidade, não a aplicação. A regra é
+preferencial, e não obrigatória, de propósito: com um rack em manutenção, a obrigatória deixaria o
+pod pendente para sempre. O chart base aplica essa restrição sem
 que o time precise saber dela, como se vê em
 [`exemplos/helm/app-base/templates/deployment.yaml`](../exemplos/helm/app-base/templates/deployment.yaml).
 
@@ -164,10 +190,11 @@ Segundo, essa diferença é absorvida pelo chart base. O time preenche valores; 
 emite Route ou Ingress conforme o ambiente. Nenhum desenvolvedor escreve os dois.
 
 Terceiro, há um teste que protege contra a divergência silenciosa. A cada atualização de qualquer
-cluster, um job do pipeline de plataforma instala uma aplicação de referência nos quatro clusters e
+cluster, um job do pipeline de plataforma instala uma aplicação de referência nos quatro clusters de
+execução e
 verifica o mesmo conjunto de comportamentos. Se a aplicação de referência passa em desenvolvimento
 e falha em produção, a divergência aparece antes de uma aplicação real tropeçar nela.
 
-O Rancher também ganha um papel que o OpenShift não cobre: inventário único. Os quatro clusters
-ficam importados nele, o que dá uma lista só de nós, versões e estado de atualização. Isso vale
-mais do que parece quando a equipe de plataforma tem poucas pessoas.
+O Rancher também ganha um papel que o OpenShift não cobre: inventário único. Os cinco clusters
+ficam importados nele, o que dá uma lista só de nós, versões e estado de atualização. Com equipe
+pequena, essa lista única poupa horas de conferência a cada atualização.

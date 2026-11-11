@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" font-family="Helvetica, Arial, sans-serif">
+  <title>Plataforma de entrega e execução, Secretaria da Fazenda</title>
+  <desc>60 aplicações e 12 times, com cinco clusters em dois datacenters: plataforma, desenvolvimento, homologação e produção em DC1; produção e réplicas da plataforma em DC2.</desc>
+
+  <rect x="0.5" y="0.5" width="1199" height="299" rx="12" fill="#F7F8FA" stroke="#D1D5DB"/>
+
+  <!-- texto -->
+  <text x="60" y="128" fill="#1F2937" font-size="40" font-weight="700">Plataforma de entrega e execução</text>
+  <text x="60" y="180" fill="#4B5563" font-size="24">Secretaria da Fazenda: 60 aplicações e 12 times,</text>
+  <text x="60" y="212" fill="#4B5563" font-size="24">cinco clusters em dois datacenters.</text>
+
+  <!-- topologia em miniatura -->
+  <g font-size="17" fill="#1F2937">
+    <rect x="770" y="36" width="196" height="228" rx="10" fill="#FFFFFF" stroke="#9CA3AF"/>
+    <text x="788" y="66" font-size="17" font-weight="700" fill="#374151">DC1</text>
+    <rect x="788" y="80" width="160" height="36" rx="6" fill="#E6F0FA" stroke="#0072B2" stroke-width="1.5"/>
+    <text x="802" y="104">plat-dc1</text>
+    <rect x="788" y="124" width="160" height="36" rx="6" fill="#E3F4EE" stroke="#009E73" stroke-width="1.5"/>
+    <text x="802" y="148">dev-dc1</text>
+    <rect x="788" y="168" width="160" height="36" rx="6" fill="#E3F4EE" stroke="#009E73" stroke-width="1.5"/>
+    <text x="802" y="192">hml-dc1</text>
+    <rect x="788" y="212" width="160" height="36" rx="6" fill="#E3F4EE" stroke="#009E73" stroke-width="1.5"/>
+    <text x="802" y="236">prd-dc1</text>
+
+    <rect x="986" y="36" width="174" height="228" rx="10" fill="#FFFFFF" stroke="#9CA3AF"/>
+    <text x="1004" y="66" font-size="17" font-weight="700" fill="#374151">DC2</text>
+    <rect x="1004" y="80" width="138" height="36" rx="6" fill="#E6F0FA" stroke="#0072B2" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="1016" y="104" font-size="15">réplicas em VM</text>
+    <rect x="1004" y="212" width="138" height="36" rx="6" fill="#E3F4EE" stroke="#009E73" stroke-width="1.5"/>
+    <text x="1016" y="236">prd-dc2</text>
+
+    <!-- replicação da plataforma entre os sítios -->
+    <path d="M948 98H1004" stroke="#6B7280" stroke-width="1.5" stroke-dasharray="5 4" fill="none"/>
+  </g>
+</svg>

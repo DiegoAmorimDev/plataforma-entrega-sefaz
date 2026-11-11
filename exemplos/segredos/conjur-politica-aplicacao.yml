@@ -1,0 +1,59 @@
+# ferramentas-config/conjur/aplicacoes/fiscal-nfe-emissor-prd.yml
+#
+# Política do Conjur para UMA aplicação em UM ambiente, gerada pelo processo de
+# catálogo e revisada por merge request como qualquer código (docs/06).
+#
+# Ela responde três perguntas, e nenhuma delas envolve o valor do segredo:
+#   quais variáveis existem      — os caminhos que a aplicação declarou
+#   quem pode ler                — a ServiceAccount conjur-leitor do namespace
+#   quem escreve                 — o PAM, pela sincronização; nenhuma pessoa
+#
+# O valor nunca está aqui. Ele chega ao Conjur pelo Vault Synchronizer, depois
+# que o CPM do PAM troca a senha no banco.
+
+- !policy
+  id: fiscal/nfe-emissor/prd
+  body:
+    # As variáveis que o values.yaml da aplicação referencia.
+    - &variaveis
+      - !variable banco/usuario
+      - !variable banco/senha
+      - !variable banco-migracao/usuario
+      - !variable banco-migracao/senha
+      - !variable certificado/pfx
+      - !variable certificado/senha
+
+    - !group leitores
+
+    # Ler e buscar o valor. Nada de atualizar: a escrita é do PAM.
+    - !permit
+      role: !group leitores
+      privileges: [ read, execute ]
+      resource: *variaveis
+
+# A identidade é a ServiceAccount, apresentada pelo External Secrets com um token
+# que o próprio Kubernetes emite e assina. Não existe senha para buscar a senha.
+# O autenticador JWT do cluster confere a assinatura pelas chaves públicas do
+# servidor de API de prd-dc1 e prd-dc2.
+- !policy
+  id: conjur/authn-jwt/prd/aplicacoes
+  body:
+    - !host
+      id: system:serviceaccount:fiscal-nfe-emissor-prd:conjur-leitor
+      annotations:
+        authn-jwt/prd/sub: system:serviceaccount:fiscal-nfe-emissor-prd:conjur-leitor
+
+# Duas concessões. A primeira deixa a identidade AUTENTICAR pelo autenticador
+# JWT de produção; sem ela, o Conjur recusa o token antes de olhar qualquer
+# variável. A segunda deixa ler os segredos da aplicação.
+- !grant
+  role: !group conjur/authn-jwt/prd/consumers
+  member: !host conjur/authn-jwt/prd/aplicacoes/system:serviceaccount:fiscal-nfe-emissor-prd:conjur-leitor
+
+- !grant
+  role: !group fiscal/nfe-emissor/prd/leitores
+  member: !host conjur/authn-jwt/prd/aplicacoes/system:serviceaccount:fiscal-nfe-emissor-prd:conjur-leitor
+
+# Consequência: a ServiceAccount de homologação (fiscal-nfe-emissor-hml) não está
+# neste grupo e não lê o segredo de produção, mesmo sendo o mesmo time e a mesma
+# aplicação. A separação entre ambientes vale também dentro do cofre.

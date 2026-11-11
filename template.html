@@ -91,6 +91,7 @@
     page-break-inside: avoid;
   }
   .mermaid svg { max-width: 100%; height: auto; }
+  img.figura { display: block; width: 100%; height: auto; margin: 0.6rem auto 1.4rem; page-break-inside: avoid; }
 
   #TOC {
     background: var(--codigo-fundo);
@@ -115,7 +116,7 @@
   @media print {
     body { max-width: 100%; padding: 0; font-size: 10.5pt; }
     a { color: var(--tinta); border: none; }
-    pre, table, blockquote, .mermaid { page-break-inside: avoid; }
+    pre, table, blockquote, .mermaid, img.figura { page-break-inside: avoid; }
     h1, h2, h3 { page-break-after: avoid; }
   }
   @page { margin: 1.8cm 1.6cm; }
@@ -140,14 +141,17 @@ $body$
     startOnLoad: true,
     theme: "base",
     themeVariables: {
-      fontFamily: "Inter, Segoe UI, system-ui, sans-serif",
+      // mesma régua das figuras do draw.io: Helvetica, tinta #1F2937, linha #4B5563
+      fontFamily: "Helvetica, Arial, sans-serif",
       fontSize: "13px",
-      primaryColor: "#eef4fa",
-      primaryTextColor: "#15202b",
-      primaryBorderColor: "#1f3b57",
-      lineColor: "#4a5a6a",
-      secondaryColor: "#f5f7fa",
-      tertiaryColor: "#ffffff"
+      primaryColor: "#F3F4F6",
+      primaryTextColor: "#1F2937",
+      primaryBorderColor: "#6B7280",
+      lineColor: "#4B5563",
+      secondaryColor: "#F3F4F6",
+      tertiaryColor: "#FFFFFF",
+      clusterBkg: "#FFFFFF",
+      clusterBorder: "#9CA3AF"
     },
     flowchart: { curve: "basis", padding: 16 },
     securityLevel: "loose"

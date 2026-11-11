@@ -6,33 +6,52 @@
 #
 # Razão: uma aplicação legada com 12% de cobertura não chega a 80% numa entrega.
 # Portão intransponível produz teste que executa linha sem verificar nada.
+#
+# O SonarQube é a edição Community, que analisa só main (ADR-012). Por isso o
+# quality gate roda depois do merge e ANTES do build da imagem: uma reprovação
+# aqui impede que a versão chegue a qualquer ambiente. No merge request, o portão
+# de cobertura é o job cobertura-linhas-alteradas, em /linguagens/java.yml.
 
 sonarqube:
-  extends: .runner-comum
+  extends: [.job-teste-base, .identidade-conjur]
   stage: qualidade
-  image: sonarsource/sonar-scanner-cli:latest
+  needs:
+    - compilar
+    - teste-unitario
+    - { job: teste-integracao-postgres, optional: true }
+    - { job: teste-integracao-oracle,   optional: true }
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   variables:
     SONAR_HOST_URL: https://sonar.sefaz.interno
     GIT_DEPTH: "0"   # o Sonar precisa do histórico para saber o que é código novo
   script:
-    - sonar-scanner
+    # Token de análise, sem permissão administrativa, lido do Conjur pela
+    # identidade do job. Nunca em variável de CI.
+    - export SONAR_TOKEN="$(conjur-segredo plataforma/esteira/sonar-token)"
+    - mvn -B sonar:sonar
         -Dsonar.projectKey="${SONAR_PROJECT_KEY}"
         -Dsonar.qualitygate.wait=true
         -Dsonar.qualitygate.timeout=600
-        -Dsonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
-        -Dsonar.coverage.exclusions="**/Migrations/**,**/Program.cs"
+        -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml,target/site/jacoco-it/jacoco.xml
+        -Dsonar.coverage.exclusions="**/config/**,**/*Application.java"
   allow_failure: false   # BLOQUEIA
 
-# Quality gate aplicado no SonarQube, perfil "SEFAZ - código novo":
+# Portão de qualidade aplicado no SonarQube, perfil "SEFAZ - código novo".
+# Código novo é definido como "desde a versão anterior".
 #   cobertura de linhas novas        >= 80%
 #   linhas duplicadas em código novo <=  3%
 #   vulnerabilidade em código novo    =  0 (alta ou crítica)
 #   bug bloqueante em código novo     =  0
-#   dívida técnica de código novo     <= A
+# Problemas de manutenção e complexidade NÃO entram no portão: medem dívida,
+# não risco imediato, e aparecem no relatório abaixo (docs/03).
 
 relatorio-divida-tecnica:
   extends: .runner-comum
   stage: qualidade
+  needs: [sonarqube]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
   image: ${REGISTRY}/plataforma/sonar-report:v3
   script:
     # Mede o repositório inteiro e publica no painel do time. Não reprova nada.

@@ -4,14 +4,15 @@
 # O que depende de terceiro informa e gera acompanhamento.
 
 # ---------------------------------------------------------------------------
-# BLOQUEIA — segredo em código
+# BLOQUEIA — segredo em código. Primeiro job do pipeline: não há motivo para
+# compilar e testar um commit que já vazou credencial.
 # ---------------------------------------------------------------------------
 segredo-no-codigo:
   extends: .runner-comum
-  stage: seguranca
-  image: zricethezav/gitleaks:latest
+  stage: validacao
+  image: ${REGISTRY}/proxy/zricethezav/gitleaks:v8.21.2
   script:
-    - gitleaks detect --source . --redact --report-format sarif --report-path gitleaks.sarif
+    - gitleaks git --redact --report-format sarif --report-path gitleaks.sarif
   allow_failure: false
   artifacts:
     when: always
@@ -20,16 +21,21 @@ segredo-no-codigo:
 # ---------------------------------------------------------------------------
 # BLOQUEIA — dependência vulnerável COM correção publicada
 #
-# O filtro --ignore-unfixed é a decisão central deste arquivo. CVE crítico sem
-# patch disponível não dá ao time nenhuma ação possível; bloquear ali só ensina
-# o time a desligar a verificação.
+# O filtro --ignore-unfixed é a decisão central deste arquivo. Vulnerabilidade
+# crítica sem correção publicada não dá ao time nenhuma ação possível; bloquear
+# ali só ensina o time a desligar a verificação.
 # ---------------------------------------------------------------------------
 dependencia-vulneravel:
   extends: .runner-comum
   stage: seguranca
-  image: aquasec/trivy:latest
+  image: ${REGISTRY}/proxy/aquasec/trivy:0.56.2
+  variables:
+    # Rede fechada: o banco de vulnerabilidades vem do espelho no Harbor, e a
+    # plataforma o atualiza todo dia. Sem espelho, o Trivy falha sempre.
+    TRIVY_DB_REPOSITORY: ${REGISTRY}/proxy/aquasecurity/trivy-db
+    TRIVY_JAVA_DB_REPOSITORY: ${REGISTRY}/proxy/aquasecurity/trivy-java-db
   script:
-    - trivy fs --scanners vuln
+    - trivy fs --skip-db-update --skip-java-db-update --scanners vuln
         --severity CRITICAL
         --ignore-unfixed
         --exit-code 1
@@ -40,15 +46,19 @@ dependencia-vulneravel:
 # ---------------------------------------------------------------------------
 # INFORMA — vulnerabilidade sem correção disponível
 #
-# Não reprova. Publica o relatório e abre issue no projeto com prazo de
-# reavaliação semanal. Quando o patch sair, o job acima passa a bloquear sozinho.
+# Não reprova. Publica o relatório e abre item de acompanhamento no projeto, com
+# reavaliação semanal. Quando a correção sair, o job acima passa a bloquear
+# sozinho.
 # ---------------------------------------------------------------------------
 dependencia-sem-correcao:
   extends: .runner-comum
   stage: seguranca
-  image: aquasec/trivy:latest
+  image: ${REGISTRY}/proxy/aquasec/trivy:0.56.2
+  variables:
+    TRIVY_DB_REPOSITORY: ${REGISTRY}/proxy/aquasecurity/trivy-db
+    TRIVY_JAVA_DB_REPOSITORY: ${REGISTRY}/proxy/aquasecurity/trivy-java-db
   script:
-    - trivy fs --scanners vuln --severity CRITICAL,HIGH --format json -o sem-correcao.json .
+    - trivy fs --skip-db-update --skip-java-db-update --scanners vuln --severity CRITICAL,HIGH --format json -o sem-correcao.json .
     - /scripts/abrir-issue-acompanhamento.sh sem-correcao.json
   allow_failure: true
   artifacts:
@@ -61,23 +71,16 @@ dependencia-sem-correcao:
 analise-estatica:
   extends: .runner-comum
   stage: seguranca
-  image: returntocorp/semgrep:latest
+  image: ${REGISTRY}/proxy/semgrep/semgrep:1.90.0
   script:
-    - semgrep ci --config p/owasp-top-ten --severity ERROR
+    # Regras empacotadas na imagem da plataforma (/regras/owasp.yml), atualizadas
+    # por ela. O semgrep ci pede conta e consulta a internet; o scan local não.
+    - semgrep scan --config /regras/owasp.yml --severity ERROR --error --metrics=off
   allow_failure: false
 
 # ---------------------------------------------------------------------------
-# BLOQUEIA — manifesto inválido e violação de política de admissão
-#
-# Rodar a política do Kyverno aqui é o que evita descobrir a violação só quando
-# o Argo CD tenta sincronizar, onde o erro fica longe de quem o causou.
+# Manifesto inválido e violação de política de admissão NÃO são verificados
+# aqui. O manifesto da aplicação mora em manifestos-apps, e é o pipeline daquele
+# repositório que renderiza, valida e publica a diferença no merge request
+# (exemplos/gitops/.gitlab-ci.yml).
 # ---------------------------------------------------------------------------
-validar-manifestos:
-  extends: .runner-comum
-  stage: seguranca
-  image: ghcr.io/kyverno/kyverno-cli:latest
-  script:
-    - kustomize build manifests/overlays/hml > /tmp/render.yaml
-    - kubeconform -strict -summary /tmp/render.yaml
-    - kyverno apply /politicas/obrigatorias/ --resource /tmp/render.yaml --fail-on-violation
-  allow_failure: false

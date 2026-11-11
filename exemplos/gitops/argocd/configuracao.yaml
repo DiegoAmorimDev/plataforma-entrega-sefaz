@@ -1,0 +1,130 @@
+# plataforma-addons/argocd/configuracao.yaml
+#
+# A configuração do próprio Argo CD também mora no Git e passa por merge request.
+# O Argo CD gerencia a si mesmo a partir deste repositório: reconstruí-lo é
+# instalar a versão mínima e apontar para cá (docs/09).
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+  labels: { app.kubernetes.io/part-of: argocd }
+data:
+  # Helm dentro do Kustomize: cada overlay infla o chart app-base com o
+  # values.yaml da base. O load-restrictor permite ao overlay ler ../../base.
+  # Efeito colateral: qualquer overlay passa a poder ler arquivo do servidor de
+  # repositório. O job validar do manifestos-apps reprova gerador de ConfigMap ou
+  # Secret com caminho fora de base/ (gitops/.gitlab-ci.yml).
+  kustomize.buildOptions: --enable-helm --load-restrictor LoadRestrictionsNone
+
+  # Login pelo Keycloak, com os grupos do diretório corporativo.
+  url: https://argocd.sefaz.interno
+  oidc.config: |
+    name: Keycloak
+    issuer: https://sso.sefaz.interno/realms/sefaz
+    clientID: argocd
+    clientSecret: $oidc.keycloak.clientSecret   # vem do Conjur pelo External Secrets
+    requestedScopes: [openid, profile, email, groups]
+
+  # Sem conta local de administrador em uso diário. A conta de emergência
+  # existe, desligada, e sua senha fica em cofre físico (docs/06).
+  admin.enabled: "false"
+
+  # Anotação usada para saber quais objetos pertencem a cada Application.
+  application.resourceTrackingMethod: annotation
+---
+# Sem esta opção o Argo CD ignora o applicationsSync: create-update do
+# ApplicationSet, e o diretório apagado por engano apagaria a Application.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmd-params-cm
+  namespace: argocd
+  labels: { app.kubernetes.io/part-of: argocd }
+data:
+  applicationsetcontroller.enable.policy.override: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm
+  namespace: argocd
+  labels: { app.kubernetes.io/part-of: argocd }
+data:
+  # Quem não está em grupo nenhum só vê. As permissões de cada time ficam no
+  # AppProject dele (appsets/aplicacoes.yaml).
+  policy.default: role:readonly
+  scopes: '[groups]'
+  policy.csv: |
+    # Plataforma: administração completa.
+    g, SEFAZ-PLATAFORMA, role:admin
+
+    # Plantão da plataforma: além de sincronizar, pode alterar a Application para
+    # desligar a sincronização automática durante um incidente (docs/09, acesso
+    # de emergência). Não pode criar nem apagar Application, projeto ou cluster.
+    p, role:plantao-plataforma, applications, get,    */*, allow
+    p, role:plantao-plataforma, applications, sync,   */*, allow
+    p, role:plantao-plataforma, applications, update, */*, allow
+    p, role:plantao-plataforma, applications, action/*, */*, allow
+    p, role:plantao-plataforma, logs, get, */*, allow
+    g, SEFAZ-PLATAFORMA-PLANTAO, role:plantao-plataforma
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+data:
+  # Três destinos: o commit no GitLab, o Grafana e o canal do time.
+  service.webhook.gitlab: |
+    url: https://git.sefaz.interno/api/v4
+    headers:
+      - name: PRIVATE-TOKEN
+        value: $gitlab-token             # token só de estado de commit, do Conjur
+      - name: Content-Type
+        value: application/json
+  service.grafana: |
+    apiUrl: https://grafana.sefaz.interno/api
+    apiKey: $grafana-api-key
+  service.mattermost: |
+    apiURL: https://chat.sefaz.interno
+    token: $mattermost-token
+
+  # Quem abriu o merge request de promoção vê no próprio merge request se a
+  # versão subiu: responde a "meu pipeline passou, por que não subiu" (ADR-003).
+  # Funciona porque manifestos-apps usa merge por avanço rápido: o commit que
+  # entra em main é o mesmo do merge request, e o estado aparece nos dois.
+  template.estado-commit: |
+    webhook:
+      gitlab:
+        method: POST
+        path: /projects/plataforma%2Fmanifestos-apps/statuses/{{.app.status.operationState.syncResult.revision}}
+        body: |
+          {"state": "{{if eq .app.status.operationState.phase "Succeeded"}}success{{else}}failed{{end}}",
+           "name": "argocd/{{.app.metadata.name}}",
+           "target_url": "https://argocd.sefaz.interno/applications/{{.app.metadata.name}}"}
+
+  # Marcação no gráfico: quando a taxa de erro sobe às 14h02, o plantão vê que
+  # houve implantação às 14h00.
+  template.marcacao-grafana: |
+    message: "{{.app.metadata.name}} sincronizado em {{.app.status.operationState.syncResult.revision}}"
+
+  template.aviso-time: |
+    message: |
+      {{.app.metadata.name}}: {{.app.status.health.status}} / {{.app.status.operationState.phase}}
+      https://argocd.sefaz.interno/applications/{{.app.metadata.name}}
+
+  trigger.on-sync-succeeded: |
+    - when: app.status.operationState.phase in ['Succeeded']
+      send: [estado-commit]
+  trigger.on-deployed: |
+    - when: app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+      oncePer: app.status.sync.revision
+      send: [marcacao-grafana]
+  trigger.on-health-degraded: |
+    - when: app.status.health.status == 'Degraded'
+      send: [aviso-time]
+  trigger.on-sync-failed: |
+    - when: app.status.operationState.phase in ['Error', 'Failed']
+      send: [aviso-time, estado-commit]

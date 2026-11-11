@@ -1,10 +1,18 @@
-# ApplicationSet que gera uma Application do Argo CD por aplicação e por ambiente.
+# ApplicationSet que gera uma Application do Argo CD por overlay existente.
 #
 # O efeito prático: aplicação nova não exige nenhuma configuração no Argo CD.
-# O processo de catálogo cria o diretório em manifestos-apps, e na próxima
-# varredura o gerador cria as três Applications sozinho.
+# O processo de catálogo cria os diretórios em manifestos-apps, e na próxima
+# varredura o gerador cria uma Application para cada overlay que existe.
 #
-# Sem isso, 60 aplicações em 3 ambientes seriam 180 objetos mantidos à mão.
+# Sem isso, cada overlay seria um objeto mantido à mão: até 240 para 60
+# aplicações em 4 clusters.
+#
+# O gerador parte dos diretórios de overlay, e não de "toda aplicação vezes todo
+# cluster". Aplicação que só tem overlays/dev, ou de nível 3 e 4 sem prd-dc2
+# (sítio único), não ganha Application em erro de comparação nos outros clusters.
+# O custo: um overlay esquecido não gera alerta de ausência, só a aplicação que
+# não aparece naquele cluster; o pipeline do catálogo confere os overlays que o
+# nível da aplicação exige.
 
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
@@ -16,80 +24,127 @@ spec:
   goTemplateOptions: ["missingkey=error"]
 
   generators:
-    # matrix: cruza "todo diretório de aplicação" com "todo ambiente".
+    # matrix: cruza "todo diretório de overlay" com "o cluster cujo rótulo
+    # sefaz.io/overlay é igual ao nome desse diretório".
     - matrix:
         generators:
           - git:
               repoURL: https://git.sefaz.interno/plataforma/manifestos-apps.git
               revision: main
               directories:
-                - path: apps/*/*
-          - list:
-              elements:
-                - ambiente: dev
-                  cluster: https://api.dev-dc1.sefaz.interno:6443
-                  auto: "true"
-                  prune: "true"
-                - ambiente: hml
-                  cluster: https://api.hml-dc1.sefaz.interno:6443
-                  auto: "true"
-                  prune: "true"
-                - ambiente: prd
-                  cluster: https://api.prd-dc1.sefaz.interno:6443
-                  auto: "true"
-                  prune: "false"   # remoção em produção exige confirmação humana
-                - ambiente: prd
-                  cluster: https://api.prd-dc2.sefaz.interno:6443
-                  auto: "true"
-                  prune: "false"
+                # apps/<time>/<aplicação>/overlays/<overlay>. O diretório
+                # overlays/prd é a base compartilhada pelos dois sítios e não
+                # tem cluster com esse rótulo, então não gera Application.
+                - path: apps/*/*/overlays/*
+          # Os clusters entram pelos rótulos do registro, não por endereço fixo
+          # neste arquivo. Um terceiro cluster de produção entra registrando o
+          # cluster com os rótulos certos, sem tocar aqui. Todo cluster de
+          # execução leva sefaz.io/execucao=true e um sefaz.io/overlay igual ao
+          # nome do diretório que ele executa:
+          #   dev-dc1 → ambiente=dev overlay=dev     prune=true
+          #   hml-dc1 → ambiente=hml overlay=hml     prune=true
+          #   prd-dc1 → ambiente=prd overlay=prd-dc1 prune=false
+          #   prd-dc2 → ambiente=prd overlay=prd-dc2 prune=false
+          - clusters:
+              selector:
+                matchLabels:
+                  sefaz.io/execucao: "true"
+                  sefaz.io/overlay: '{{.path.basename}}'
 
   template:
     metadata:
-      name: '{{index .path.segments 2}}-{{.ambiente}}-{{trunc 3 (sha1sum .cluster)}}'
+      # nfe-emissor-prd-dc1, nfe-emissor-hml-dc1 ...
+      name: '{{index .path.segments 2}}-{{.name}}'
       labels:
-        sefaz.time: '{{index .path.segments 1}}'
-        sefaz.ambiente: '{{.ambiente}}'
+        sefaz.io/time: '{{index .path.segments 1}}'
+        sefaz.io/ambiente: '{{index .metadata.labels "sefaz.io/ambiente"}}'
       annotations:
         # Abre o painel certo direto da tela do Argo CD.
         link.argocd.argoproj.io/external-link: >-
           https://grafana.sefaz.interno/d/app/{{index .path.segments 2}}
+        # Avisos para o GitLab, o Grafana e o canal do time (configuracao.yaml).
+        notifications.argoproj.io/subscribe.on-sync-succeeded.gitlab: ""
+        notifications.argoproj.io/subscribe.on-sync-failed.gitlab: ""
+        notifications.argoproj.io/subscribe.on-deployed.grafana: ""
+        notifications.argoproj.io/subscribe.on-health-degraded.mattermost: 'canal-{{index .path.segments 1}}'
+        notifications.argoproj.io/subscribe.on-sync-failed.mattermost: 'canal-{{index .path.segments 1}}'
     spec:
       project: '{{index .path.segments 1}}'
       source:
         repoURL: https://git.sefaz.interno/plataforma/manifestos-apps.git
         targetRevision: main
-        path: '{{.path.path}}/overlays/{{.ambiente}}'
+        path: '{{.path.path}}'
       destination:
-        server: '{{.cluster}}'
-        namespace: '{{index .path.segments 1}}-{{index .path.segments 2}}-{{.ambiente}}'
+        server: '{{.server}}'
+        namespace: '{{index .path.segments 1}}-{{index .path.segments 2}}-{{index .metadata.labels "sefaz.io/ambiente"}}'
       syncPolicy:
-        automated:
-          prune: '{{.prune}}'
-          selfHeal: true        # desfaz alteração manual no cluster em até 3 minutos
-          allowEmpty: false
         syncOptions:
           - CreateNamespace=false   # o namespace vem do processo de catálogo, com cota e NetworkPolicy
           - ApplyOutOfSyncOnly=true
           - RespectIgnoreDifferences=true
+        # Duas tentativas, não cinco: cada tentativa recria o gancho de
+        # migração. O changelog aguenta repetir (um DDL por changeset), mas
+        # falha que persiste depois de duas tentativas pede gente olhando.
         retry:
-          limit: 5
+          limit: 2
           backoff:
             duration: 10s
             factor: 2
             maxDuration: 5m
       ignoreDifferences:
-        # O HPA controla replicas. Sem isso, Argo CD e HPA brigam em loop.
+        # Ignora as réplicas escritas pelo HPA (kube-controller-manager) e pelo
+        # Argo Rollouts, que zera o Deployment depois de assumir os pods. NÃO
+        # ignora as réplicas escritas pelo Git: a espera quente de nível 2, que
+        # zera as réplicas em prd-dc2, continua valendo. Ignorar o campo
+        # inteiro faria o Argo CD desconsiderar também o Git.
         - group: apps
           kind: Deployment
-          jsonPointers:
-            - /spec/replicas
-  # Nunca remove Application sozinho. Diretório apagado por engano no Git
-  # não deve apagar a aplicação em produção.
+          managedFieldsManagers: [kube-controller-manager, argo-rollouts]
+        - group: argoproj.io
+          kind: Rollout
+          managedFieldsManagers: [kube-controller-manager]
+        # O Reloader recria os pods anotando o modelo do pod quando o segredo
+        # rotaciona (estratégia "annotations"). Sem esta linha, a correção
+        # automática de desvio desfaria a anotação e os pods voltariam com a
+        # senha velha.
+        - group: apps
+          kind: Deployment
+          jqPathExpressions:
+            - '.spec.template.metadata.annotations."reloader.stakater.com/last-reloaded-from"'
+
+  # Campos booleanos não podem ser preenchidos pelo template comum: '{{...}}'
+  # vira texto, e o Argo CD espera verdadeiro ou falso. O templatePatch é
+  # renderizado antes da conversão e aceita o tipo certo.
+  templatePatch: |
+    spec:
+      syncPolicy:
+        automated:
+          enabled: true
+          prune: {{ index .metadata.labels "sefaz.io/prune" }}   # false em produção
+          selfHeal: true      # desfaz alteração manual em segundos, dentro da janela
+          allowEmpty: false
+
+  # O acesso de emergência desliga a sincronização automática de UMA aplicação
+  # (docs/09). Sem esta linha, o controlador do ApplicationSet desfaria a
+  # alteração no ciclo seguinte. O custo: mudar a política no templatePatch não
+  # alcança Applications já existentes; a mudança exige recriá-las.
+  ignoreApplicationDifferences:
+    - jsonPointers:
+        - /spec/syncPolicy
+
+  # Diretório apagado por engano no Git não pode apagar a aplicação em produção.
+  # Duas proteções, porque cada uma cobre metade:
+  #   applicationsSync: create-update — o controlador cria e atualiza
+  #     Applications, mas nunca as apaga. Exige a opção
+  #     applicationsetcontroller.enable.policy.override no Argo CD, ligada no
+  #     argocd-cmd-params-cm (argocd/configuracao.yaml).
+  #   preserveResourcesOnDeletion — se a Application for apagada à mão, os
+  #     objetos no cluster ficam.
   syncPolicy:
+    applicationsSync: create-update
     preserveResourcesOnDeletion: true
 ---
-# Janela de mudança de produção. Fora dela, a sincronização fica pendente e
-# aguarda; não falha. Correção urgente usa a janela de exceção, com registro.
+# Um AppProject por time, gerado pelo processo de catálogo.
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -98,26 +153,57 @@ metadata:
 spec:
   description: Aplicações do time fiscal
   sourceRepos:
+    # Só manifesto. O repositório de código da aplicação não é origem válida.
     - https://git.sefaz.interno/plataforma/manifestos-apps.git
   destinations:
     - server: '*'
       namespace: 'fiscal-*'
   clusterResourceWhitelist: []    # time não cria recurso de escopo global
   namespaceResourceBlacklist:
+    # Cota, limite e política de rede vêm do catálogo, não do time.
     - group: ''
       kind: ResourceQuota
     - group: ''
       kind: LimitRange
     - group: networking.k8s.io
       kind: NetworkPolicy
+    # A conexão com o Conjur também vem do catálogo. Um time que criasse o
+    # próprio SecretStore poderia apontar para outra identidade.
+    - group: external-secrets.io
+      kind: SecretStore
+    # Segredo só nasce do External Secrets. Impede o secretGenerator do
+    # Kustomize de materializar valor no Git: o objeto Secret é do operador.
+    - group: ''
+      kind: Secret
+  roles:
+    # Os grupos vêm do Keycloak, que lê o diretório corporativo.
+    - name: time
+      groups: [SEFAZ-FISCAL-DEV]
+      policies:
+        - p, proj:fiscal:time, applications, get, fiscal/*, allow
+        - p, proj:fiscal:time, applications, sync, fiscal/*-dev-dc1, allow
+        - p, proj:fiscal:time, applications, sync, fiscal/*-hml-dc1, allow
+        - p, proj:fiscal:time, applications, action/*, fiscal/*-dev-dc1, allow
+        - p, proj:fiscal:time, applications, action/*, fiscal/*-hml-dc1, allow
+        - p, proj:fiscal:time, logs, get, fiscal/*, allow
+    - name: plantao
+      groups: [SEFAZ-FISCAL-PLANTAO]
+      policies:
+        - p, proj:fiscal:plantao, applications, get, fiscal/*, allow
+        - p, proj:fiscal:plantao, applications, sync, fiscal/*, allow
+        - p, proj:fiscal:plantao, logs, get, fiscal/*, allow
   syncWindows:
+    # Janela de mudança de produção. Fora dela, a sincronização fica pendente e
+    # aguarda; não falha. Vale também para a correção automática de desvio.
     - kind: allow
       schedule: '0 7 * * 1-5'
       duration: 12h
-      applications: ['*-prd-*']
+      # Sem fuso declarado, o horário seria avaliado em UTC: a janela das 7h
+      # às 19h viraria 4h às 16h.
+      timeZone: America/Sao_Paulo
+      applications: ['*-prd-dc*']
+      # Sincronização manual fora da janela: quem tem permissão de sincronizar
+      # em produção, ou seja, o plantão do time e o plantão da plataforma. Toda
+      # ação fica registrada. A correção automática de desvio também espera a
+      # janela: fora dela, desvio aparece como alerta (docs/09).
       manualSync: true
-    - kind: deny
-      schedule: '0 0 * * 0,6'
-      duration: 24h
-      applications: ['*-prd-*']
-      manualSync: true    # plantão ainda consegue sincronizar durante incidente

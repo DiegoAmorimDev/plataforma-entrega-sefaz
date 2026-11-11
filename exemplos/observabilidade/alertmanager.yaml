@@ -3,6 +3,19 @@
 # O que faz o alerta ser levado a sério não é a regra do Prometheus, é este
 # arquivo. Ele garante que o alerta chegue na pessoa certa, agrupado, e que um
 # nó caindo não produza 40 chamadas telefônicas sobre o mesmo evento.
+#
+# Modelo: um Alertmanager por cluster, inclusive em prd-dc2. O Prometheus de
+# cada cluster notifica o Alertmanager do próprio cluster, e cada Alertmanager
+# envia o próprio sinal de vida à vigilância externa. Perder DC1 não deixa
+# prd-dc2 sem quem notifique, e a vigilância sabe qual cluster parou de falar
+# (docs/04 e docs/05). Alternativa descartada: um agrupamento único que
+# atravessa os dois sítios; ele exigiria um membro em DC2 fora do inventário e
+# faria a perda de DC1 depender do quórum. Custo aceito: o mesmo problema
+# em dois clusters gera duas notificações, uma por Alertmanager, e os
+# silenciamentos precisam ser criados em cada um.
+#
+# O rótulo "cluster" que as regras abaixo usam vem de external_labels do
+# Prometheus de cada cluster.
 
 global:
   resolve_timeout: 5m
@@ -18,16 +31,26 @@ route:
 
   routes:
     # -----------------------------------------------------------------------
+    # Sinal de vida: a cada minuto, para a vigilância externa. Se parar de
+    # chegar lá, a vigilância aciona o plantão da plataforma.
+    # -----------------------------------------------------------------------
+    - matchers: [alertname="SinalDeVida"]
+      receiver: vigilancia-externa
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 1m
+
+    # -----------------------------------------------------------------------
     # Infraestrutura sempre vai para a plataforma, independente do namespace.
     # -----------------------------------------------------------------------
-    - matchers: [team="plataforma", severity="critical"]
+    - matchers: [time="plataforma", severity="critical"]
       receiver: plantao-plataforma
       group_wait: 10s
       repeat_interval: 1h
 
     # -----------------------------------------------------------------------
-    # Alerta de aplicação vai para o time dono. O label "team" vem do carimbo
-    # que o coletor OpenTelemetry aplica, não de configuração manual.
+    # Alerta de aplicação vai para o time dono. O rótulo "time" vem da ficha do
+    # catálogo, que gera a regra de alerta de cada aplicação.
     #
     # Nível 1 liga o telefone a qualquer hora. Nível 2 liga em horário
     # estendido e vira chamado fora dele. Essa diferença é o que mantém a
@@ -37,16 +60,22 @@ route:
       receiver: plantao-time
       group_wait: 10s
       repeat_interval: 1h
-      # Sem resposta em 20 minutos, escala para a plataforma.
-      continue: false
+      # O escalonamento para a plataforma, sem reconhecimento em 20 minutos, é
+      # feito pela ferramenta de plantão, que guarda a escala de cada time.
 
+    # Nível 2 em horário estendido: telefone do time. Fora dele, o mesmo alerta
+    # segue para a central de serviços. O "continue" é obrigatório: uma rota com
+    # active_time_intervals casa mesmo fora do horário (só fica muda), e sem ele
+    # a rota seguinte nunca seria alcançada.
     - matchers: [severity="critical", tier="2"]
       receiver: plantao-time
       active_time_intervals: [horario-estendido]
       repeat_interval: 2h
+      continue: true
 
     - matchers: [severity="critical", tier="2"]
       receiver: service-desk
+      mute_time_intervals: [horario-estendido]
 
     - matchers: [severity="warning"]
       receiver: service-desk
@@ -61,37 +90,49 @@ route:
 # Inibição: suprime o efeito enquanto a causa está ativa.
 #
 # Sem isto, um nó caindo gera: 1 alerta de nó + 40 alertas de pod não pronto +
-# os alertas de SLO das aplicações afetadas. O plantonista recebe 50 mensagens
+# os alertas de orçamento de erro das aplicações afetadas. O plantonista recebe 50 mensagens
 # sobre um evento, e aprende a ignorar o grupo inteiro.
 # ---------------------------------------------------------------------------
 inhibit_rules:
+  # Nó fora suprime os alertas de pod não pronto do MESMO cluster. O alerta de
+  # pod (KubePodNotReady e parentes) tem namespace e pod, mas não tem o rótulo
+  # "node", então a ligação é só pelo cluster. Custo aceito: enquanto um nó
+  # está fora, um pod doente em outro nó do mesmo cluster também fica mudo. O
+  # orçamento de erro da aplicação afetada não é inibido e cobre o impacto no
+  # usuário. NoIndisponivel está em prometheus-rules.yaml.
   - source_matchers: [alertname="NoIndisponivel"]
-    target_matchers: [alertname=~"Pod.*|KubePod.*"]
-    equal: [cluster, node]
-
-  - source_matchers: [alertname="ClusterIndisponivel"]
-    target_matchers: [severity=~"critical|warning"]
+    target_matchers: [alertname=~"KubePod.*"]
     equal: [cluster]
 
-  # Crítico suprime o aviso do mesmo alerta. Receber os dois é ruído puro.
-  - source_matchers: [severity="critical"]
-    target_matchers: [severity="warning"]
-    equal: [alertname, namespace]
+  # O aviso de queima lenta cala quando a queima rápida ou média está ativa na
+  # mesma aplicação. Os alertas têm nomes diferentes, por isso o casamento é
+  # pelo namespace e não pelo nome. Receber os dois é ruído puro.
+  - source_matchers: [alertname=~"OrcamentoErroQueima(Rapida|Media)"]
+    target_matchers: [alertname="OrcamentoErroQueimaLenta"]
+    equal: [namespace]
 
-  # Durante janela de manutenção declarada, só o que for externo alerta.
-  - source_matchers: [alertname="ManutencaoProgramada"]
-    target_matchers: [escopo="interno"]
-    equal: [cluster]
+  # Não há inibição por "cluster indisponível" nem por "manutenção programada":
+  # nenhum dos dois alertas existe neste desenho. Cluster fora do ar é o caso
+  # do sinal de vida que para, tratado pela vigilância externa, e manutenção é
+  # silenciamento criado à mão, com prazo, na janela de mudança.
 
 time_intervals:
   - name: horario-estendido
     time_intervals:
       - weekdays: [monday:friday]
         times: [{ start_time: "06:00", end_time: "22:00" }]
-        location: America/Belem
+        location: America/Sao_Paulo
 
 receivers:
   - name: nulo
+
+  # Serviço de vigilância hospedado fora dos dois datacenters: um serviço
+  # contratado ou uma máquina na rede de outro órgão. Recebe o sinal de vida e
+  # aciona o plantão quando ele para.
+  - name: vigilancia-externa
+    webhook_configs:
+      - url: https://vigilancia.exemplo.gov.br/sinal/plataforma-sefaz
+        send_resolved: false
 
   - name: plantao-plataforma
     webhook_configs:
@@ -100,8 +141,9 @@ receivers:
 
   - name: plantao-time
     webhook_configs:
-      # O destino é resolvido pelo label "team": cada time tem sua escala.
-      - url: https://plantao.sefaz.interno/api/v2/alerts/{{ .CommonLabels.team }}
+      # URL fixa: o campo não aceita modelo. A ferramenta de plantão lê o
+      # rótulo "time" no corpo do alerta e aciona a escala daquele time.
+      - url: https://plantao.sefaz.interno/api/v2/alerts
         send_resolved: true
 
   - name: service-desk

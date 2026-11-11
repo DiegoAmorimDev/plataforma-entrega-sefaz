@@ -1,12 +1,22 @@
-# Coletor OpenTelemetry — ponto único de entrada de métrica, log e trace.
+# Coletor OpenTelemetry — ponto único de entrada de log e trace.
 #
-# Por que um coletor no meio, em vez de a aplicação enviar direto ao backend:
+# Por que um coletor no meio, em vez de a aplicação enviar direto ao armazenamento:
 # trocar Tempo por Jaeger, ou Loki por Elasticsearch, vira alteração deste
 # arquivo. Sem ele, seria alteração em 60 aplicações.
 #
-# Dois níveis: um DaemonSet por nó, que recebe da aplicação local, e um
-# Deployment de entrada, que faz amostragem de cauda e precisa ver o trace
-# inteiro para decidir.
+# Métrica NÃO passa por aqui. O Prometheus de cada cluster raspa a aplicação e
+# avalia as regras de alerta localmente, para que prd-dc2 continue alertando sem
+# DC1 (docs/04 e docs/05).
+#
+# Dois níveis:
+#   otel-agente   — DaemonSet, um por nó. A aplicação envia para o agente do
+#                   próprio nó (Service com internalTrafficPolicy: Local). O
+#                   agente usa o exportador loadbalancing com chave traceID:
+#                   todos os trechos de um trace chegam à MESMA réplica abaixo.
+#   otel-gateway  — este arquivo. Faz amostragem de cauda, que só funciona se a
+#                   réplica enxergar o trace inteiro. Sem o balanceamento por
+#                   traceID do agente, três réplicas atrás de um Service comum
+#                   veriam pedaços de cada trace e decidiriam errado.
 
 apiVersion: opentelemetry.io/v1beta1
 kind: OpenTelemetryCollector
@@ -32,16 +42,31 @@ spec:
         limit_percentage: 80
         spike_limit_percentage: 25
 
-      # Carimba tudo com namespace, pod, nó e time dono. É este carimbo que o
-      # Alertmanager usa para rotear o alerta ao time certo.
+      # Carimba log e trace com namespace, pod, nó, time dono e versão. É o
+      # que permite, no Grafana, ir do trace ao log do mesmo pod e filtrar a
+      # investigação por time.
+      #
+      # O gateway recebe os dados do agente do nó, e não do pod: a associação
+      # padrão, pelo IP da conexão, apontaria para o pod do agente. O chart
+      # coloca o IP do pod em OTEL_RESOURCE_ATTRIBUTES (k8s.pod.ip), e a
+      # associação abaixo usa esse atributo. Alternativa descartada: carimbar no
+      # agente DaemonSet, que vê o IP de origem; exigiria dar a cada agente
+      # acesso de leitura à API do Kubernetes em todos os nós. Custo aceito: a
+      # aplicação precisa declarar o próprio IP, o que o chart faz.
       k8sattributes:
         auth_type: serviceAccount
+        pod_association:
+          - sources:
+              - { from: resource_attribute, name: k8s.pod.ip }
         extract:
           metadata: [k8s.namespace.name, k8s.pod.name, k8s.node.name, k8s.deployment.name]
           labels:
             - { tag_name: sefaz.time, key: sefaz.io/time,     from: pod }
             - { tag_name: sefaz.tier, key: sefaz.io/tier,     from: pod }
             - { tag_name: ambiente,   key: sefaz.io/ambiente, from: pod }
+            # Canário ou estável, aplicado pelo Argo Rollouts: separa no
+            # trace o pedido atendido pela versão nova.
+            - { tag_name: versao,     key: sefaz.io/versao,   from: pod }
 
       # Rede de segurança contra dado sensível em log e atributo de trace.
       # A primeira linha de defesa continua sendo a aplicação não registrar.
@@ -55,9 +80,14 @@ spec:
         log_statements:
           - context: log
             statements:
-              # CPF no corpo da mensagem, em qualquer formato.
-              - replace_pattern(body, "\\d{3}\\.?\\d{3}\\.?\\d{3}-?\\d{2}", "[CPF]")
-              - replace_pattern(body, "\\d{2}\\.?\\d{3}\\.?\\d{3}/?\\d{4}-?\\d{2}", "[CNPJ]")
+              # CPF e CNPJ isolados no corpo da mensagem, em qualquer formato.
+              # As bordas de palavra (\b) são o que preserva a chave de acesso
+              # da NF-e: 44 dígitos seguidos contêm sequências que casariam com
+              # CPF, e a chave é justamente o identificador que a investigação
+              # de incidente fiscal procura. Inscrição estadual tem formato
+              # próprio por estado e entra como regra do catálogo.
+              - replace_pattern(body, "\\b\\d{3}\\.?\\d{3}\\.?\\d{3}-?\\d{2}\\b", "[CPF]")
+              - replace_pattern(body, "\\b\\d{2}\\.?\\d{3}\\.?\\d{3}/?\\d{4}-?\\d{2}\\b", "[CNPJ]")
 
       # Amostragem de cauda: decide DEPOIS de ver o trace inteiro.
       # A amostragem de cabeça descartaria justamente o trace que deu errado.
@@ -93,12 +123,6 @@ spec:
         endpoint: http://loki-gateway.observabilidade/otlp
         sending_queue: { enabled: true }
 
-      prometheusremotewrite:
-        endpoint: http://thanos-receive.observabilidade:19291/api/v1/receive
-        # Sem isto, as métricas chegam sem namespace e pod, e deixam de ser
-        # cruzáveis com log e trace.
-        resource_to_telemetry_conversion: { enabled: true }
-
     service:
       pipelines:
         traces:
@@ -109,10 +133,6 @@ spec:
           receivers: [otlp]
           processors: [memory_limiter, k8sattributes, transform/mascarar-corpo, batch]
           exporters: [otlphttp/loki]
-        metrics:
-          receivers: [otlp]
-          processors: [memory_limiter, k8sattributes, batch]
-          exporters: [prometheusremotewrite]
 
       telemetry:
         metrics: { level: detailed }   # o coletor também é monitorado

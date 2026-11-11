@@ -1,0 +1,28 @@
+# apps/fiscal/nfe-emissor/overlays/prd-dc2/kustomization.yaml
+#
+# Sítio secundário. Herda tudo de prd, inclusive o digest.
+#
+# nfe-emissor é nível 1: ativa nos dois sítios, com a mesma quantidade de
+# réplicas. Numa aplicação de nível 2, este arquivo é onde mora a espera quente:
+# o patch comentado abaixo zera as réplicas, e ativar o sítio é remover o patch
+# por merge request (docs/05, runbook de contingência).
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../prd
+
+configMapGenerator:
+  - name: nfe-emissor-config
+    behavior: merge
+    literals:
+      - SITIO=dc2
+
+# Somente para nível 2 — espera quente:
+# patches:
+#   - target: { kind: Rollout, name: nfe-emissor }
+#     patch: |-
+#       - op: replace
+#         path: /spec/replicas
+#         value: 0

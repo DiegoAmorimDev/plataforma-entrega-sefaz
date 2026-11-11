@@ -4,35 +4,39 @@ Observabilidade aqui tem um objetivo mensurável: reduzir o tempo entre a reclam
 identificação do componente responsável. Tudo o que não contribui para isso é custo de
 armazenamento.
 
-A aplicação emite métrica, log e trace para um destino só, o coletor OpenTelemetry. O coletor
-decide para onde cada sinal vai. Trocar Tempo por Jaeger, ou Loki por Elasticsearch, passa a ser
-alteração de configuração do coletor, sem tocar em nenhuma das 60 aplicações.
+A aplicação emite log e trace para um destino só, o coletor OpenTelemetry, que decide para onde
+cada sinal vai. Trocar Tempo por Jaeger, ou Loki por Elasticsearch, passa a ser alteração de
+configuração do coletor, sem tocar em nenhuma das 60 aplicações. A métrica segue outro caminho: o
+Prometheus de cada cluster a busca na aplicação.
 
 ---
 
 ## Como os sinais fluem
 
+**Figura 4.1 — Como os sinais saem da aplicação e chegam ao plantão.**
+
 ```mermaid
 flowchart LR
-    APP["Aplicação<br/>SDK OpenTelemetry"]
+    APP["Aplicação<br/>agente Java OpenTelemetry"]
     NODE["Coletor por nó<br/>DaemonSet"]
-    GW["Coletor de entrada<br/>amostragem e enriquecimento"]
-    PROM["Prometheus<br/>retenção 15 dias"]
+    GW["Coletor de entrada<br/>amostragem de cauda"]
+    PROM["Prometheus do cluster<br/>regras de alerta, 15 dias"]
+    AM["Alertmanager<br/>um por cluster"]
     THA["Thanos<br/>consulta global"]
     LOKI["Loki"]
     TEMPO["Tempo"]
     MINIO["MinIO<br/>retenção longa"]
     GRAF["Grafana"]
-    AM["Alertmanager"]
     ZAP["Plantão<br/>telefone e mensagem"]
-    SD["Service desk<br/>chamado"]
+    SD["Central de serviços<br/>chamado"]
+    VIG["Vigilância externa<br/>fora dos dois sítios"]
 
-    APP -->|OTLP| NODE
-    NODE --> GW
+    APP -->|log e trace, OTLP| NODE
+    NODE -->|por identificador de trace| GW
     GW --> LOKI
     GW --> TEMPO
     PROM -->|raspagem| APP
-    PROM --> THA
+    PROM -->|escrita remota| THA
     THA --> MINIO
     LOKI --> MINIO
     TEMPO --> MINIO
@@ -44,19 +48,52 @@ flowchart LR
     PROM --> AM
     AM -->|severidade crítica| ZAP
     AM -->|severidade de aviso| SD
+    AM -.->|sinal de vida a cada minuto| VIG
 
-    classDef col fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
-    classDef arm fill:#1f4a3d,stroke:#7fc8ab,color:#eafaf3
-    classDef saida fill:#4a1f2e,stroke:#d98fa6,color:#fae9ef
-    class NODE,GW,PROM col
-    class THA,LOKI,TEMPO,MINIO arm
-    class AM,ZAP,SD saida
+    classDef execucao fill:#E3F4EE,stroke:#009E73,color:#1F2937
+    classDef observacao fill:#F6E8F1,stroke:#B05A8C,color:#1F2937
+    classDef dados fill:#FDF3DF,stroke:#B87D00,color:#1F2937
+    classDef neutro fill:#F3F4F6,stroke:#6B7280,color:#1F2937
+    class APP execucao
+    class NODE,GW,PROM,AM,THA,LOKI,TEMPO,GRAF,VIG observacao
+    class MINIO dados
+    class ZAP,SD neutro
 ```
+
+**A regra de alerta roda no cluster onde a aplicação está.** O Prometheus de cada cluster de
+execução raspa os pods pelo `PodMonitor` que o chart base cria e avalia ali mesmo as regras de
+orçamento de erro. No OpenShift, quem faz isso é o monitoramento de cargas do usuário, que já vem
+no produto. O histórico vai por escrita remota ao Thanos, em `plat-dc1`, para a consulta global e
+para a retenção longa. Na perda de DC1, `prd-dc2` perde o painel global, mas continua avaliando
+regra e acordando gente.
+
+**Cada cluster tem o próprio Alertmanager, inclusive `prd-dc2`, e cada um envia o próprio sinal de
+vida.** O Prometheus de um cluster notifica o Alertmanager do mesmo cluster, e a vigilância externa
+sabe qual deles parou de falar.
+
+> *Decisão: um Alertmanager por cluster, e não um agrupamento único que atravessa os dois sítios.
+> O agrupamento único exigiria um membro em DC2 fora do inventário e faria a perda de DC1 depender
+> de quórum entre sítios. O custo é o mesmo problema em dois clusters gerar duas notificações, e o
+> silenciamento ser criado em cada Alertmanager.*
+
+> *Decisão: métrica por raspagem no Prometheus do cluster, e não enviada pelo coletor para um
+> armazenamento central. Com o envio central, a regra de alerta precisaria ser avaliada no centro,
+> em `plat-dc1`, e cairia junto com DC1, justamente quando mais importa. O custo é a métrica não
+> passar pelo coletor: trocar o Prometheus não é só configuração do coletor, como é para log e
+> trace.*
+
+**O trace inteiro chega à mesma réplica do coletor de entrada.** A amostragem de cauda decide
+depois de ver o trace completo. O coletor por nó encaminha cada trecho pelo identificador de trace,
+de modo que todos os trechos de um pedido caiam na mesma réplica. Sem isso, três réplicas atrás de
+um balanceador comum veriam pedaços de cada trace e decidiriam errado.
 
 A configuração do coletor está em
 [`exemplos/observabilidade/otel-collector.yaml`](../exemplos/observabilidade/otel-collector.yaml).
-O ponto central dela é o processador `k8sattributes`, que carimba cada sinal com namespace, pod,
-nó e time dono. Sem esse carimbo, o roteamento de alerta por time não funciona.
+O processador `k8sattributes` carimba log e trace com namespace, pod, nó e time dono. É o carimbo
+que permite, no Grafana, sair de um trace para o log do mesmo pod e filtrar por time. Como o coletor
+de entrada recebe os dados do coletor do nó, e não do pod, o chart coloca o IP do pod entre os
+atributos de recurso, e a associação usa esse atributo. Sem ele, todo dado sairia carimbado com o
+pod do coletor do nó.
 
 ---
 
@@ -64,8 +101,9 @@ nó e time dono. Sem esse carimbo, o roteamento de alerta por time não funciona
 
 ### Métrica
 
-Toda aplicação expõe o mesmo conjunto mínimo, porque é o que permite comparar sessenta aplicações
-no mesmo painel. O chart base injeta a configuração do SDK, então o time não escreve isso.
+Toda aplicação expõe o mesmo conjunto mínimo, porque só assim sessenta aplicações cabem no mesmo
+painel. O agente Java do OpenTelemetry vem na imagem base e o chart o configura, então o time não
+escreve isso.
 
 | Métrica | Para que serve |
 |---|---|
@@ -88,7 +126,7 @@ frequente de capacidade.
 
 Log estruturado em JSON, uma linha por evento, com campos obrigatórios: horário em UTC, nível,
 mensagem, nome do serviço, versão, identificador de trace e identificador de correlação do pedido.
-O chart base configura isso e o controle de admissão recusa pod cuja imagem não declare o padrão.
+O chart base configura isso, e a lista de prontidão para produção confere.
 
 O que não entra no log, e isso é verificado por regra do coletor: documento de identificação,
 número de inscrição fiscal, valor de tributo, senha, token e cabeçalho de autorização. O coletor
@@ -110,6 +148,11 @@ Rastreamento distribuído com amostragem adaptativa no coletor de entrada. A reg
 
 Amostragem de cauda custa memória no coletor, porque ele segura o trace até completá-lo. Em troca,
 evita o problema clássico da amostragem de cabeça: descartar justamente o trace que deu errado.
+
+> *Decisão: o agente Java envia todo trace (`parentbased_always_on`) e só o coletor decide o que
+> guardar. A alternativa, uma taxa de 1 por cento no agente, descartaria 99 por cento dos traces
+> antes de o coletor saber se algum deu erro, e a promessa de cem por cento dos traces com erro
+> deixaria de valer. O custo é todo trace sair do pod, e o coletor de entrada absorver esse volume.*
 
 A correlação entre os três sinais é o que faz a investigação ser rápida. O painel do Grafana mostra
 o pico de latência, o clique leva ao trace exemplar daquele ponto, e o trace leva aos logs daquele
@@ -142,9 +185,21 @@ quanto a degradação lenta:
 | 1 vez | 3 dias e 6 horas | 30 dias | Painel |
 
 A janela curta junto com a longa é o que evita dois defeitos. Só a janela longa demora a detectar
-uma queda total. Só a curta dispara com qualquer soluço de trinta segundos. Exigir as duas ao mesmo
-tempo dá detecção rápida sem ruído. A regra completa está em
+uma degradação súbita. Só a curta dispara com qualquer soluço de trinta segundos. Exigir as duas ao
+mesmo tempo dá detecção rápida sem ruído. A regra completa está em
 [`exemplos/observabilidade/prometheus-rules.yaml`](../exemplos/observabilidade/prometheus-rules.yaml).
+
+**O orçamento de erro cobre degradação, não queda total.** Com a aplicação fora do ar, não há
+requisição, a taxa de erro é zero dividido por zero, e as regras de consumo não disparam. A regra
+de métrica ausente acabaria detectando, mas só depois de cerca de 20 minutos, mais que o tempo
+máximo de retomada do nível 1. Por isso o nível 1 tem um alerta direto de indisponibilidade:
+nenhuma réplica pronta, ou 100 por cento de resposta 5xx no roteador, por dois minutos, com
+severidade crítica.
+
+> *Decisão: alerta direto de queda total para o nível 1, ao lado do orçamento de erro. A
+> alternativa, confiar só na métrica ausente, detecta em 20 minutos. O custo é aceitar que esse
+> alerta não tem o filtro das duas janelas: uma queda de dois minutos liga o telefone. Para o nível
+> 1, é o preço certo, e por isso o alerta não existe nos demais níveis.*
 
 ### Regra 2: alerta sobre sintoma, não sobre causa
 
@@ -160,34 +215,40 @@ A exceção são as métricas de capacidade com horizonte previsível. Disco que
 em quatro horas gera chamada telefônica, porque é problema certo com tempo de agir. O critério é a
 previsão, não o percentual.
 
-### Regra 3: todo alerta tem dono, runbook e prazo
+### Regra 3: todo alerta tem dono, roteiro de resposta e prazo
 
 Um alerta não entra em produção sem três campos preenchidos:
 
 ```yaml
 annotations:
-  summary: "Consumo acelerado do orçamento de erro em {{ $labels.app }}"
+  summary: "Consumo acelerado do orçamento de erro em {{ $labels.namespace }}"
   description: "Taxa de erro em {{ $value | humanizePercentage }} na última hora."
-  runbook_url: "https://wiki.sefaz.interno/runbooks/{{ $labels.app }}/erro-5xx"
+  runbook_url: "https://wiki.sefaz.interno/runbooks/nfe-emissor/erro-5xx"
 labels:
   severity: critical
-  team: "{{ $labels.team }}"
+  time: fiscal
 ```
 
-O `team` vem do carimbo que o coletor aplica, e é o que o Alertmanager usa para rotear. Alerta de
-aplicação vai para o time dono; alerta de nó, de etcd, de certificado e de registry vai para a
+O rótulo `time` vem da ficha do catálogo, que gera a regra de alerta de cada aplicação, e é o que
+o Alertmanager usa para rotear. Alerta de aplicação vai para o time dono; alerta de nó, de etcd, de certificado e de registry vai para a
 plataforma. O roteamento está em
 [`exemplos/observabilidade/alertmanager.yaml`](../exemplos/observabilidade/alertmanager.yaml).
 
-O runbook responde a quatro perguntas: o que isso significa, como confirmar, o que fazer agora e
-quando escalar. Dois parágrafos bastam. Runbook ausente é impedimento de aprovação do alerta.
+O roteiro de resposta responde a quatro perguntas: o que isso significa, como confirmar, o que fazer agora e
+quando escalar. Dois parágrafos bastam. Roteiro de resposta ausente é impedimento de aprovação do alerta.
 
 ### Regra 4: agrupamento e inibição desde o primeiro dia
 
 Um nó que cai gera, sem tratamento, quarenta pods não prontos, quarenta alertas de disponibilidade
-e várias chamadas telefônicas sobre o mesmo evento. O Alertmanager agrupa por cluster e namespace,
-e tem regra de inibição: enquanto houver alerta de nó indisponível, os alertas de pod naquele nó
-ficam suprimidos.
+e várias chamadas telefônicas sobre o mesmo evento. O Alertmanager agrupa por cluster, pelo rótulo
+externo que cada Prometheus acrescenta, e por namespace,
+e tem duas regras de inibição. Enquanto houver alerta de nó indisponível, os alertas de pod não
+pronto do mesmo cluster ficam suprimidos, porque o alerta de pod não carrega o nó. O custo é um pod
+doente em outro nó do mesmo cluster ficar mudo durante a queda do primeiro, e quem cobre esse caso
+é o orçamento de erro da aplicação, que não é inibido. A segunda regra faz o aviso de queima lenta
+calar enquanto a queima rápida ou média da mesma aplicação está ativa. Não há inibição por cluster
+indisponível nem por manutenção programada: cluster fora do ar é o caso do sinal de vida que para,
+e manutenção é silenciamento com prazo.
 
 O silenciamento é possível, sempre com prazo máximo de 24 horas e justificativa obrigatória.
 Silêncio sem prazo é como o ruído volta.
@@ -210,26 +271,32 @@ manutenção.
 
 Três painéis, nessa ordem.
 
-**Painel de visão geral da plataforma**: estado dos quatro clusters, nós fora do ar, capacidade
+**Painel de visão geral da plataforma**: estado dos cinco clusters, nós fora do ar, capacidade
 livre, certificados vencendo em menos de trinta dias, estado de sincronização do Argo CD, fila de
 build.
 
-**Painel por aplicação**, gerado automaticamente para cada entrada do catálogo: as quatro métricas
+**Painel por aplicação**, gerado automaticamente para cada entrada do catálogo: as métricas
 de ouro, orçamento de erro restante no mês, versão em execução em cada ambiente, últimas cinco
 implantações marcadas sobre o gráfico. A marcação da implantação sobre o gráfico de latência é a
 peça que mais acelera diagnóstico, porque responde de imediato se a degradação começou com a
 entrega.
 
-**Painel de dependências**: latência e taxa de erro do Oracle, do PostgreSQL, do Kafka e das
-integrações externas. Quando várias aplicações degradam juntas, a causa quase sempre está aqui.
+**Painel de dependências**: latência e taxa de erro do Oracle, do PostgreSQL e das integrações
+externas. Quando várias aplicações degradam juntas, a causa quase sempre está aqui.
 
 ---
 
 ## A operação do dia a dia
 
-Plantão em duas camadas. A primeira é do time dono da aplicação, em horário estendido, para alerta
-da própria aplicação. A segunda é da plataforma, em regime contínuo, para alerta de infraestrutura
-e para escalonamento.
+Plantão em duas camadas. A primeira é do time dono da aplicação: contínua para o nível 1, em
+horário estendido para o nível 2. A segunda é da plataforma, em regime contínuo, para alerta de
+infraestrutura e para escalonamento. A ferramenta de escala de plantão guarda as escalas, faz a
+chamada telefônica e escala para a plataforma o alerta não reconhecido em vinte minutos.
+
+Uma regra que dispara sempre, o sinal de vida, sai de cada cluster a cada minuto para um serviço de
+vigilância fora dos dois datacenters. Se o sinal parar, a cadeia de alerta caiu, e a vigilância
+aciona o plantão da plataforma por conta própria. Sem ela, a pane que derruba o Alertmanager é
+também a que ninguém fica sabendo.
 
 Toda chamada telefônica gera registro com horário de disparo, horário de reconhecimento, horário de
 resolução e causa. Incidente de severidade 1 ou 2 gera análise posterior sem atribuição de culpa,

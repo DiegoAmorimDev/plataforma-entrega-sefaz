@@ -33,7 +33,7 @@ Quay**, pelo suporte do mesmo fornecedor da plataforma de contêiner.
 - Verificação de assinatura Cosign no próprio registry, além da verificação no momento da admissão.
 - Replicação entre instâncias configurável por projeto, que é o que mantém DC2 funcional quando
   DC1 cai.
-- Cache de proxy para registries públicos, que remove a dependência de internet e o limite de
+- Cópia local das imagens de registries públicos, que remove a dependência de internet e o limite de
   requisições do Docker Hub.
 - Políticas de retenção por projeto. Sem elas, o armazenamento de um registry com sessenta
   aplicações cresce sem controle.

@@ -4,12 +4,14 @@ A meta é concreta e verificável: **perder qualquer máquina da plataforma, exc
 estado, e reconstruí-la a partir do Git, sem consultar ninguém.** O que não passa por esse teste
 ainda não está em código, mesmo que exista um arquivo em algum repositório.
 
-Estado, aqui, é dado de banco, conteúdo do registry, histórico do GitLab, segredo do Vault e
+Estado, aqui, é dado de banco, conteúdo do registry, histórico do GitLab, segredo do Conjur e
 telemetria no MinIO. Esses dependem de backup e restauração, não de reconstrução.
 
 ---
 
 ## As quatro camadas e as ferramentas de cada uma
+
+**Figura 6.1 — As quatro camadas de infraestrutura como código.**
 
 ```mermaid
 flowchart TB
@@ -20,23 +22,32 @@ flowchart TB
         T3["Argo CD · app-of-apps<br/>Helm e Kustomize"]
     end
     subgraph L2["Clusters"]
-        T2["openshift-install IPI<br/>Terraform com provedor Rancher"]
+        T2["openshift-install IPI · MachineSet<br/>Terraform com provedor Rancher"]
     end
-    subgraph L1["Máquinas virtuais e sistema operacional"]
+    subgraph L1["Máquinas virtuais fora do OpenShift"]
         T1["Terraform com provedor vSphere<br/>Ansible"]
     end
 
     L1 --> L2 --> L3 --> L4
 
-    classDef c fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
-    class T1,T2,T3,T4 c
+    classDef entrega fill:#E6F0FA,stroke:#0072B2,color:#1F2937
+    class T1,T2,T3,T4 entrega
+    style L4 fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
+    style L3 fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
+    style L2 fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
+    style L1 fill:#FFFFFF,stroke:#9CA3AF,color:#1F2937
 ```
 
 A ordem importa. Cada camada só pode ser aplicada depois que a de baixo converge, e o pipeline
 respeita isso. Tentar aplicar a camada 3 num cluster que a camada 2 ainda está criando é a causa
 mais comum de aplicação que falha pela metade.
 
-### Camada 1: máquinas virtuais e sistema operacional
+### Camada 1: máquinas virtuais fora do OpenShift
+
+Esta camada cuida de toda máquina virtual que **não** é nó de OpenShift: os nós do RKE2 de
+desenvolvimento, as máquinas de banco, o Conjur, os pares de HAProxy e as réplicas de plataforma em
+DC2. Nó de OpenShift é outro assunto, tratado na camada 2: ele roda RHCOS, um sistema imutável que
+o próprio cluster cria e configura, e nem Terraform nem Ansible tocam nele.
 
 **Terraform com o provedor vSphere** cria máquina virtual, disco, placa de rede, grupo de portas e
 regra de anti-afinidade. A entrada é um modelo preparado, gerado por Packer a partir da imagem
@@ -53,15 +64,28 @@ duas vezes seguidas contra uma máquina descartável e falha se a segunda execu�
 alteração. Papel que relata alteração a cada execução esconde desvio de configuração, porque
 ninguém mais distingue o normal do anormal.
 
-O módulo que cria nó de trabalho está em
+O módulo que cria nó de trabalho do RKE2 está em
 [`exemplos/terraform/vsphere-worker/`](../exemplos/terraform/vsphere-worker/). Ele recebe a função
 do nó e devolve a máquina já registrada no inventário dinâmico do Ansible.
 
 ### Camada 2: clusters
 
 **OpenShift** nasce de um `install-config.yaml` versionado, por instalação totalmente automatizada
-sobre o vSphere. O arquivo descreve rede, quantidade de nós, domínio e registry espelhado. Os
-segredos que ele consome vêm do Vault no momento da execução, nunca do repositório.
+(IPI) sobre o vSphere. O arquivo descreve rede, domínio, registry espelhado e os domínios de falha
+do vSphere, que espalham os nós por hospedeiro e por rack e dão a eles o rótulo de zona. Os
+segredos que ele consome vêm do Conjur no momento da execução, nunca do repositório.
+
+Depois da instalação, quem cria e substitui nó de trabalho é o próprio OpenShift, pelo
+`MachineSet`. Aumentar a capacidade de `prd-dc1` é alterar o número de réplicas de um
+`MachineSet` por merge request. A configuração do sistema dos nós, como parâmetros de kernel,
+sincronização de horário e repositório interno, é um `MachineConfig`. Os dois são objetos do
+cluster, versionados em `infra-clusters` e aplicados pelo Argo CD como os componentes da camada 3.
+
+> *Decisão: instalação IPI, com nós geridos pelo próprio OpenShift, e não UPI, em que a plataforma
+> cria as máquinas por Terraform. Com IPI, nó defeituoso é substituído pelo `MachineSet` sem
+> intervenção, e a atualização do cluster atualiza também o sistema dos nós. O custo é o
+> instalador exigir permissões amplas no vCenter, concedidas a uma conta de serviço própria do
+> cluster, com a senha no Conjur.*
 
 **RKE2** nasce pelo provedor Terraform do Rancher, que cria o cluster e registra os nós.
 
@@ -74,12 +98,14 @@ a versão tiver defeito, ele aparece no sítio que não está servindo a maior p
 
 Tudo o que roda dentro do cluster e não é aplicação de negócio é gerenciado pelo Argo CD, no padrão
 de aplicação que gerencia aplicações. Um único objeto raiz aponta para um diretório, e cada
-subdiretório vira um componente: controlador de entrada, cert-manager, External Secrets, pilha do
-Prometheus, coletor OpenTelemetry, Loki, Tempo, Kyverno, Velero e o próprio Argo CD.
+subdiretório vira um componente: controlador de entrada, cert-manager, External Secrets, Reloader,
+pilha do Prometheus, coletor OpenTelemetry, Loki, Tempo, Kyverno, Argo Rollouts, Velero e o próprio
+Argo CD.
 
 O Argo CD gerenciar a si mesmo tem uma consequência prática: a configuração dele, incluindo
 projetos, permissões e repositórios conectados, está no Git. Reconstruir o Argo CD é instalar a
-versão mínima e apontar para o repositório. Em menos de trinta minutos, ele reconstrói o resto.
+versão mínima e apontar para o repositório. A expectativa é que ele reconstrua o resto em menos de
+trinta minutos, e esse número é hipótese a validar no exercício de continuidade, não medida.
 
 ### Camada 4: configuração das ferramentas
 
@@ -92,7 +118,7 @@ mais machuca, porque ninguém percebe até precisar reconstruir.
 | Harbor | Projetos, cotas, políticas de retenção, regras de replicação, gatilho de varredura |
 | Keycloak | Clientes, escopos, mapeamentos para o diretório corporativo |
 | Grafana | Fontes de dados, painéis como JSON, pastas e permissões |
-| Vault | Políticas, métodos de autenticação, motores de segredo |
+| Conjur | Políticas em YAML: identidades, grupos, autenticadores e quem lê cada caminho. O valor do segredo nunca entra |
 | Prometheus | Regras de alerta e de registro, como objeto no cluster |
 
 Painel do Grafana criado pela interface e não exportado para o Git é perdido na próxima
@@ -104,22 +130,39 @@ para virar permanente.
 
 ## Onde o código fica
 
-Seis repositórios no grupo `plataforma/` do GitLab, com fronteiras definidas por quem precisa
+Sete repositórios no grupo `plataforma/` do GitLab, com fronteiras definidas por quem precisa
 aprovar a alteração.
 
 | Repositório | Conteúdo | Quem aprova |
 |---|---|---|
 | `infra-vsphere` | Terraform da camada 1 | Plataforma, duas aprovações |
 | `infra-clusters` | Instalação e atualização de cluster | Plataforma, duas aprovações |
-| `plataforma-addons` | Camada 3, componentes do cluster | Plataforma |
+| `plataforma-addons` | Camada 3, componentes do cluster e a configuração do Argo CD | Plataforma, duas aprovações |
 | `ferramentas-config` | Camada 4 | Plataforma |
-| `manifestos-apps` | Manifestos das 60 aplicações, por ambiente | Time dono em dev e hml; time dono mais plataforma em prd |
+| `catalogo-apps` | Uma ficha por aplicação, que dispara a criação de namespace, projeto e diretório | Plataforma |
+| `manifestos-apps` | Manifestos das 60 aplicações, por ambiente | Promotor em `dev` e `hml`, sem aprovação humana; em `prd`, duas pessoas do time dono, e a plataforma também quando a mudança vai além do digest |
 | `templates-ci` | Templates de pipeline, versionados por tag | Plataforma |
 
 A separação entre `manifestos-apps` e os demais é a que mais importa no dia a dia. Ela permite dar
 ao time autonomia sobre a própria implantação sem dar acesso à infraestrutura. Dentro dele, o
-arquivo `CODEOWNERS` garante que cada time só aprove o próprio diretório, e que o overlay de
-produção exija também uma aprovação da plataforma.
+arquivo `CODEOWNERS` garante que cada time só aprove o próprio diretório. Ele dá dono a
+`apps/*/*/overlays/hml*/` e a `apps/*/*/overlays/prd*/`, e a proteção de `main` exige aprovação de
+dono de código. O GitLab recusa, por isso, o push direto que toque esses caminhos: o token do
+promotor só escreve direto em `overlays/dev/`, e em `hml` e `prd` ele abre merge request. Em `hml`,
+o merge request do promotor entra sozinho quando o pipeline passa, depois de a esteira pedir o
+rebase pela API.
+
+> *Decisão: o limite de caminho vive na proteção de `main` e no `CODEOWNERS`, e não no token. O
+> token do promotor é um só, e quem controla o `.gitlab-ci.yml` do próprio projeto poderia trocar o
+> script do job e editar produção direto. A alternativa, um token por ambiente, multiplicaria
+> segredos por aplicação sem fechar o caso. O custo é o merge request de `hml` precisar de rebase
+> a cada avanço de `main`, o que o job de promoção faz.*
+
+Em produção, o pipeline
+do repositório distingue a promoção pura, que só troca o digest e é aprovada por duas pessoas do
+time, da mudança estrutural, que exige também a plataforma
+([`exemplos/gitops/.gitlab-ci.yml`](../exemplos/gitops/.gitlab-ci.yml)). Com sessenta aplicações e
+dezenas de promoções por dia, a plataforma não pode estar no caminho de cada uma.
 
 ---
 
@@ -130,18 +173,22 @@ vCenter de produção, e a credencial para isso só existe dentro do pipeline.
 
 O fluxo é o mesmo para todas as camadas:
 
+**Figura 6.2 — O caminho de uma mudança de infraestrutura.**
+
 ```mermaid
 flowchart LR
     MR["Merge request"] --> VAL["Validação<br/>fmt · validate · tflint · checkov"]
     VAL --> PLAN["Plano gerado<br/>comentado no merge request"]
-    PLAN --> REV["Revisão humana<br/>lê o plano, não só o diff"]
-    REV --> APV["Aprovação<br/>uma ou duas, conforme o repo"]
+    PLAN --> REV[/"Revisão humana<br/>lê o plano, não só o diff"\]
+    REV --> APV[/"Aprovação<br/>uma ou duas, conforme o repo"\]
     APV --> APL["Aplicação a partir de main<br/>runner dedicado"]
     APL --> DRIFT["Verificação diária de desvio"]
     DRIFT -.->|desvio encontrado| ALERTA["Chamado para a plataforma"]
 
-    classDef a fill:#1f3b57,stroke:#8fb8de,color:#eaf2fa
-    class VAL,PLAN,APL,DRIFT a
+    classDef entrega fill:#E6F0FA,stroke:#0072B2,color:#1F2937
+    classDef neutro fill:#F3F4F6,stroke:#6B7280,color:#1F2937
+    class MR,VAL,PLAN,REV,APV,APL,DRIFT entrega
+    class ALERTA neutro
 ```
 
 Três detalhes fazem esse fluxo funcionar de verdade.
@@ -150,7 +197,7 @@ Três detalhes fazem esse fluxo funcionar de verdade.
 autor pretendia. Alterar uma variável aparentemente inofensiva e ver no plano que dezoito máquinas
 serão destruídas e recriadas é o momento em que a revisão paga o próprio custo.
 
-**O estado do Terraform fica no backend gerenciado pelo GitLab**, com trava e versionamento. Estado
+**O estado do Terraform fica no armazenamento de estado gerenciado pelo GitLab**, com trava e versionamento. Estado
 em disco local é o caminho mais curto para duas pessoas aplicarem ao mesmo tempo e destruírem
 recurso que a outra acabou de criar.
 
@@ -172,9 +219,9 @@ Ser honesto sobre isso evita a promessa que não se cumpre.
 **Os dados.** Banco, conteúdo do registry, histórico do GitLab e telemetria dependem de backup com
 restauração testada. Código recria o continente, não o conteúdo.
 
-**As chaves de recuperação do Vault e a conta local de emergência.** Ficam em cofre físico, com
-custódia dividida entre pessoas diferentes. Guardá-las em sistema que depende do Vault cria uma
-dependência circular que só aparece no pior momento possível.
+**A chave de dados do Conjur e a conta local de emergência.** Ficam em cofre físico, com custódia
+dividida entre pessoas diferentes. Guardá-las em sistema que depende do Conjur cria uma dependência
+circular que só aparece no pior momento possível.
 
 **A camada física.** Enlace de rede, energia, refrigeração e cabeamento continuam sendo processo
 documentado com operação manual.

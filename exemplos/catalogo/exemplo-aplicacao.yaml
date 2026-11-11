@@ -2,10 +2,17 @@
 #
 # Um merge request com este arquivo cria: repositório a partir do template,
 # namespaces nos quatro clusters com cota e NetworkPolicy, projeto no Harbor,
-# caminho no Vault, diretório de manifestos, Application no Argo CD, painel no
-# Grafana, alertas de SLO e grupo de plantão.
+# identidade e política no Conjur, diretório em manifestos-apps, AppProject e
+# Applications no Argo CD, painel no
+# Grafana, alertas de orçamento de erro e grupo de plantão.
 #
-# Meta: do merge ao primeiro deploy em desenvolvimento, menos de um dia.
+# O pipeline do catálogo não tem credencial de nenhum cluster. Os objetos de
+# namespace (cota, LimitRange, NetworkPolicy, RoleBinding, ServiceAccount e
+# SecretStore) viram commit em plataforma-addons/namespaces/, e uma Application
+# do projeto "plataforma" do Argo CD, que tem permissão de escopo de cluster, os
+# aplica (docs/09).
+#
+# Meta: do merge à primeira implantação em desenvolvimento, menos de um dia.
 
 apiVersion: catalogo.sefaz.io/v1
 kind: Aplicacao
@@ -26,12 +33,13 @@ classificacao:
   retencao_auditoria_anos: 5
 
 tecnologia:
-  linguagem: dotnet
-  versao_runtime: "8.0"
-  imagem_base: dotnet-runtime:8.0-ubi9   # da lista aprovada pela plataforma
+  linguagem: java
+  versao_runtime: "21"
+  framework: spring-boot-3
+  imagem_base: openjdk-21-runtime:ubi9   # da lista aprovada; traz o agente OpenTelemetry
 
 rotas:
-  - host: nfe.sefaz.gov.br
+  - host: nfe.sefaz.exemplo.gov.br
     publica: true              # entra no mapa de aplicações migradas do HAProxy
     rotas_criticas:            # amostragem de trace em 100%
       - /api/v1/autorizar
@@ -42,17 +50,18 @@ dependencias:
   bancos:
     - tipo: oracle
       nome: DBFISCAL
-      ambiente_dev: postgres-container   # em dev, contêiner descartável
+      # Em dev, o mesmo banco de produção: Oracle em contêiner descartável
+      # (Oracle Database Free, imagem espelhada no Harbor). PostgreSQL aqui
+      # repetiria o erro que o H2 comete: o dialeto que diverge só apareceria em
+      # homologação.
+      ambiente_dev: oracle-conteiner
   servicos:
     - sefaz-autorizador
     - sefaz-certificado-digital
   externos:
-    - host: autorizador.sefaz.gov.br
+    - host: autorizador.sefaz.exemplo.gov.br
       porta: 443
-      justificativa: "Autorização de NF-e junto à SEFAZ nacional"
-  mensageria:
-    - topico: fiscal.nfe.autorizada
-      papel: produtor
+      justificativa: "Autorização de NF-e junto ao ambiente nacional de autorização"
 
 # Acordado com a área de negócio, não escolhido pelo time sozinho.
 # Gera as regras de orçamento de erro e o roteamento de plantão.
@@ -78,10 +87,10 @@ operacao:
   suspensivel_em_contingencia: false
 
 migracao:
-  origem: VM com IIS, Windows Server 2019
+  origem: VM com JBoss EAP 7, RHEL 8
   onda: 3
   # Critério de desistência da onda: se não migrar em duas semanas, volta para
   # a fila com o impedimento registrado, e a onda segue sem ela.
   impedimentos_conhecidos:
-    - "Certificado A1 em arquivo local; precisa migrar para o Vault"
-    - "Sessão em memória; exige ajuste para stateless antes de escalar"
+    - "Certificado A1 em arquivo local; precisa migrar para o Conjur"
+    - "Sessão em memória; exige ajuste para funcionar sem estado antes de escalar"

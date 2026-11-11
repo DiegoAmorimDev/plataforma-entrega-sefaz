@@ -2,15 +2,27 @@
 #
 # Define a ordem dos estágios e as regras comuns. Todo job da plataforma herda
 # daqui a política de repetição e o pool de runner correto.
+#
+# São dois pipelines com papéis diferentes, escolhidos pelas regras de cada job:
+#   merge request — decide se a alteração pode entrar. Não constrói imagem.
+#   main          — produz o artefato, uma única vez, e o entrega ao GitOps.
 
 stages:
-  - validacao
-  - build
-  - teste
-  - qualidade
-  - seguranca
-  - imagem
-  - promocao
+  - validacao      # segredo no código
+  - build          # compilação
+  - teste          # unitário, integração, contrato
+  - qualidade      # cobertura das linhas alteradas (MR) e portão de qualidade (main)
+  - seguranca      # análise estática e dependências
+  - imagem         # construção, varredura, lista de componentes, assinatura (só main)
+  - promocao       # digest em dev, merge request em hml e prd (só main)
+  - pos-implantacao  # fumaça, ponta a ponta, carga, varredura dinâmica
+
+# Os jobs de main exigem CI_PIPELINE_SOURCE == "push": o pipeline agendado da
+# noite, que roda o teste de mutação, não constrói imagem nem promove nada.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
 
 default:
   interruptible: true
@@ -27,6 +39,8 @@ variables:
   REGISTRY: harbor.sefaz.interno
   IMAGEM: ${REGISTRY}/${APP_TIME}/${APP_NAME}
   REPO_MANIFESTOS: git.sefaz.interno/plataforma/manifestos-apps.git
+  CONJUR_URL: https://conjur.sefaz.interno
+  CONJUR_CONTA: sefaz
 
 # Runners comuns: build e teste. Sem acesso de rede a produção.
 .runner-comum:
@@ -34,19 +48,41 @@ variables:
     - kubernetes
     - plataforma
 
-# Runner restrito: só os jobs que escrevem no repositório de manifestos.
-# Tem token de escrita; a rede permite apenas GitLab e Harbor.
+# Runner restrito: só os jobs que assinam imagem ou escrevem no repositório de
+# manifestos. A rede permite apenas GitLab, Harbor e Conjur.
 .runner-restrito:
   tags:
     - kubernetes
     - restrito
 
+# Identidade do job para o Conjur. O GitLab emite um token assinado, válido só
+# durante o job, que diz projeto, branch e se o branch é protegido. A política do
+# Conjur decide o que essa identidade pode ler. Não existe segredo de longa duração
+# em variável de CI.
+#
+# Toda imagem da plataforma traz o utilitário conjur-segredo, que apresenta o
+# CONJUR_JWT ao autenticador JWT do Conjur e devolve o valor de um caminho:
+#   export SONAR_TOKEN="$(conjur-segredo plataforma/esteira/sonar-token)"
+.identidade-conjur:
+  id_tokens:
+    CONJUR_JWT:
+      aud: https://conjur.sefaz.interno
+
 .job-teste-base:
   extends: .runner-comum
+  image: ${REGISTRY}/base/maven:3.9-temurin-${JAVA_VERSION}
+  variables:
+    MAVEN_OPTS: "-Dmaven.repo.local=${CI_PROJECT_DIR}/.m2"
+  cache:
+    key: maven-${APP_NAME}
+    paths: [.m2/]
   artifacts:
     when: always
     reports:
-      junit: "**/TestResults/*.trx"
+      junit:
+        - "**/target/surefire-reports/TEST-*.xml"
+        - "**/target/failsafe-reports/TEST-*.xml"
     paths:
-      - "**/coverage.cobertura.xml"
+      - "**/target/site/jacoco/jacoco.xml"
+      - "**/target/site/jacoco-it/jacoco.xml"
     expire_in: 30 days

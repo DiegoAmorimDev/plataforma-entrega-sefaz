@@ -1,15 +1,32 @@
 # Chart base da plataforma — valores padrão.
 #
-# O arquivo que o time escreve costuma ter menos de 20 linhas, porque só
-# sobrescreve o que é específico da aplicação.
+# O values.yaml que o time escreve, em manifestos-apps/apps/<time>/<app>/base,
+# costuma ter menos de 40 linhas, porque só sobrescreve o que é da aplicação.
+# Exemplo completo em exemplos/gitops/base/values.yaml.
 
 replicaCount: 3
-ambiente: dev
+ambiente: dev          # preenchido por cada overlay; decide o caminho do segredo
+# openshift emite Route; rke2 emite Ingress. Preenchido pelo overlay: dev é
+# rke2, hml e prd são openshift.
+distribuicao: openshift
+time: ""               # obrigatório; vem do catálogo
 tier: "3"
 
 image:
-  repository: harbor.sefaz.interno/TIME/APP
-  digest: ""          # obrigatório; o chart falha sem ele, por decisão
+  repository: app      # nome lógico; o overlay troca pelo endereço do Harbor
+  digest: ""           # obrigatório; o chart falha sem ele, por decisão
+
+# Escolhe os caminhos das sondas. java usa o Spring Boot Actuator.
+linguagem: java
+sondas:
+  java:
+    inicio:     /actuator/health/liveness
+    prontidao:  /actuator/health/readiness
+    vitalidade: /actuator/health/liveness
+  dotnet:
+    inicio:     /health/startup
+    prontidao:  /health/ready
+    vitalidade: /health/live
 
 # Sem padrão. Obrigar o time a declarar é o que faz a conversa sobre consumo
 # acontecer antes de produção, e não durante o primeiro incidente de capacidade.
@@ -27,11 +44,25 @@ rota:
   tls: true
   publica: false      # true publica no HAProxy externo
 
+# Com o canário ligado, a Route aponta para o Service estável, e o Argo Rollouts
+# divide o peso entre ele e o Service do canário (overlays/prd/rollout-analise).
+canario:
+  habilitado: false
+
+# Com enabled: true, templates/hpa.yaml cria o HorizontalPodAutoscaler e o
+# Deployment deixa de fixar replicas. replicaCount vale só com enabled: false.
 autoscaling:
   enabled: false
   minReplicas: 3
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
+
+# Imagens das ferramentas que o chart executa como ganchos, por digest, como
+# a imagem da aplicação. A plataforma atualiza os dois valores quando publica
+# versão nova da ferramenta; a mudança entra por merge request neste chart.
+imagensPlataforma:
+  liquibase: harbor.sefaz.interno/plataforma/liquibase@sha256:5d3a8f0c91e47b62a1d6c0b9e8f2347a56c1d0e9b83f4a7261c5d0e8b9a3f714   # 4.29
+  fumaca:    harbor.sefaz.interno/plataforma/teste-fumaca@sha256:c7e12b94f0a35d86e1b7c4a920d3f58e61a0b7c3d9e4f2815a6b0c7d3e9f1a42   # v3
 
 # Orçamento de interrupção. Impede que a drenagem de dois nós em sequência
 # durante manutenção derrube a aplicação inteira.
@@ -41,23 +72,27 @@ pdb:
 
 terminationGracePeriodSeconds: 45
 
-# Segredos vêm do Vault; aqui ficam apenas os caminhos, nunca os valores.
-segredos:
-  - caminho: fiscal/nfe-emissor/banco
-    chaves: [CONN_STRING, DB_USER, DB_PASSWORD]
-  - caminho: fiscal/nfe-emissor/certificado
-    chaves: [CERT_A1_PFX, CERT_A1_SENHA]
+# Migração de banco como gancho do Argo CD, na onda -1, em todos os ambientes
+# (templates/ganchos.yaml). Exige o segredo de destino "migracao".
+migracao:
+  habilitada: false
 
-observabilidade:
-  metricas: true
-  tracesSampleRate: 0.01
-  logLevel: Information
+# Segredos: só o caminho no Conjur e o nome da variável que a aplicação lê,
+# nunca o valor. O chart gera um ExternalSecret por destino, lendo
+# <time>/<app>/<ambiente>/<caminho>/<chave>. Destino "segredo" (padrão) vira
+# variável de ambiente da aplicação; outros destinos geram Secrets separados,
+# como o da migração de banco.
+segredos: []
+#  - caminho: banco
+#    chaves:
+#      SPRING_DATASOURCE_USERNAME: usuario
+#      SPRING_DATASOURCE_PASSWORD: senha
 
-# Dependências declaradas viram NetworkPolicy de saída. Sem declarar, o pod não
-# alcança nada além do DNS e do coletor de telemetria.
-dependencias:
-  bancos:
-    - { tipo: oracle, host: dbfiscal.sefaz.interno, porta: 1521 }
-  servicos: []
-  externos:
-    - { host: autorizador.sefaz.gov.br, porta: 443 }
+# Intervalo em que o External Secrets confere o Conjur. A rotação pelo PAM chega
+# aos pods em, no máximo, este intervalo mais o reinício gradual do Reloader.
+segredosIntervalo: 5m
+
+# Amostragem de trace: o pod envia todos (parentbased_always_on) e o coletor
+# decide quais guardar. A taxa vive só em observabilidade/otel-collector.yaml.
+# NetworkPolicy não vem deste chart: nasce do catálogo, com as dependências
+# declaradas em exemplos/catalogo/exemplo-aplicacao.yaml.

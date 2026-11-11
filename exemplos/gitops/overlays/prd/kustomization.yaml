@@ -1,41 +1,48 @@
 # apps/fiscal/nfe-emissor/overlays/prd/kustomization.yaml
 #
-# Este arquivo é a produção. Promover uma versão é alterar UMA linha aqui:
-# o digest. O comentário ao lado é escrito pelo próprio pipeline, para que a
-# revisão do merge request consiga ler o que está mudando.
+# Este arquivo é a produção, comum aos dois sítios. Promover uma versão é
+# alterar UMA linha aqui: o digest. O comentário ao lado é escrito pelo próprio
+# promotor, para que a revisão do merge request consiga ler o que está mudando.
+#
+# prd-dc1 e prd-dc2 herdam deste diretório e carregam só o que é do sítio.
+# O mesmo commit chega aos dois clusters ao mesmo tempo (docs/09).
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 namespace: fiscal-nfe-emissor-prd
 
+helmCharts:
+  - name: app-base
+    repo: oci://harbor.sefaz.interno/charts
+    version: 4.2.0
+    releaseName: nfe-emissor
+    valuesFile: ../../base/values.yaml
+    valuesInline:
+      ambiente: prd
+      replicaCount: 6
+      rota: { host: nfe.sefaz.exemplo.gov.br, publica: true }
+      canario:
+        habilitado: true       # o chart aponta a Route para o Service estável
+      resources:
+        requests: { cpu: "500m", memory: "1Gi" }
+        limits:   { cpu: "2",    memory: "2Gi" }
+
 resources:
-  - ../../base
-  - pdb.yaml
-  - rollout-analise.yaml
+  - rollout-analise.yaml       # canário com análise automática (nível 1)
 
 images:
   - name: app
     newName: harbor.sefaz.interno/fiscal/nfe-emissor
     # ↓↓↓ A ÚNICA LINHA QUE A PROMOÇÃO ALTERA ↓↓↓
-    digest: sha256:9f2c7b4e1a8d3c5b7e9f0a2d4c6b8e1f3a5c7d9e0b2f4a6c8e0d2b4f6a8c0e2d  # 1.4.2, validado em hml desde 18/03 14:20
-
-replicas:
-  - name: nfe-emissor
-    count: 6
+    digest: sha256:9f2c7b4e1a8d3c5b7e9f0a2d4c6b8e1f3a5c7d9e0b2f4a6c8e0d2b4f6a8c0e2d  # 1.4.2, 3e9a1f2, validado em hml desde 18/03 14:20
 
 patches:
+  # Nível 1 roda em nós reservados, sem compartilhar com processamento em lote.
   - target:
       kind: Deployment
       name: nfe-emissor
     patch: |-
-      - op: replace
-        path: /spec/template/spec/containers/0/resources
-        value:
-          requests: { cpu: "500m", memory: "1Gi" }
-          limits:   { cpu: "2",    memory: "2Gi" }
-
-      # Nível 1 roda em nós reservados, sem compartilhar com processamento em lote.
       - op: add
         path: /spec/template/spec/tolerations
         value:
@@ -48,20 +55,34 @@ patches:
         value:
           sefaz.io/pool: tier1
 
+# O nome final do ConfigMap leva um sufixo calculado do conteúdo. Mudar uma
+# linha aqui muda o nome, o Deployment passa a apontar para o novo, e os pods são
+# recriados sozinhos. Configuração alterada sem reinício não fica pela metade.
+# Onda -2, junto com o segredo: o Job de migração, na onda -1, já lê este
+# ConfigMap. Na onda 0 ele ainda não existiria.
+generatorOptions:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    # Cada mudança de configuração gera um ConfigMap de nome novo. O antigo
+    # fica no cluster, ainda usado pelos pods estáveis durante o canário, sem
+    # deixar a Application "fora de sincronia" para sempre.
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+
 configMapGenerator:
   - name: nfe-emissor-config
-    behavior: merge
     literals:
-      - AMBIENTE=producao
-      - LOG_LEVEL=Information
-      - OTEL_TRACES_SAMPLER_ARG=0.01
-      - AUTORIZADOR_URL=https://autorizador.sefaz.gov.br
+      - LOGGING_LEVEL_ROOT=INFO
+      - AUTORIZADOR_URL=https://autorizador.sefaz.exemplo.gov.br
+      # Os endereços dos dois sítios na mesma URL, e um serviço que só existe
+      # na instância principal do Data Guard: depois de uma troca de papel, o
+      # driver encontra a principal nova sem mudança de configuração (docs/05).
+      - "SPRING_DATASOURCE_URL=jdbc:oracle:thin:@(DESCRIPTION=(FAILOVER=on)(CONNECT_TIMEOUT=5)(RETRY_COUNT=3)(ADDRESS_LIST=(ADDRESS=(PROTOCOL=TCP)(HOST=dbfiscal-dc1.sefaz.interno)(PORT=1521))(ADDRESS=(PROTOCOL=TCP)(HOST=dbfiscal-dc2.sefaz.interno)(PORT=1521)))(CONNECT_DATA=(SERVICE_NAME=NFE_PRD_PRINCIPAL)))"
 
-# Segredo NUNCA vive aqui. O External Secrets materializa a partir do Vault.
-secretGenerator: []
+# Segredo NUNCA vive aqui. O chart gera o ExternalSecret, e o External Secrets
+# busca o valor no Conjur, em fiscal/nfe-emissor/prd/*.
 
 labels:
   - pairs:
-      sefaz.io/ambiente: producao
+      sefaz.io/ambiente: prd
       sefaz.io/tier: "1"
       sefaz.io/time: fiscal
