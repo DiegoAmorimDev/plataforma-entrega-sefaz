@@ -1,60 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" font-family="Helvetica, Arial, sans-serif">
-  <title>Plataforma de Entrega e Execução — Secretaria da Fazenda</title>
-  <defs>
-    <linearGradient id="fundo" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0B1F33"/>
-      <stop offset="1" stop-color="#12304F"/>
-    </linearGradient>
-    <clipPath id="borda"><rect width="1200" height="320" rx="14"/></clipPath>
-  </defs>
-  <g clip-path="url(#borda)">
-    <rect width="1200" height="320" fill="url(#fundo)"/>
-    <!-- grade discreta ao fundo -->
-    <g stroke="#FFFFFF" stroke-opacity="0.05">
-      <path d="M800 0v320M880 0v320M960 0v320M1040 0v320M1120 0v320"/>
-      <path d="M760 40h440M760 120h440M760 200h440M760 280h440"/>
-    </g>
-    <!-- os cinco planos, nas cores da convenção das figuras -->
-    <g>
-      <rect x="0" y="312" width="240" height="8" fill="#0072B2"/>
-      <rect x="240" y="312" width="240" height="8" fill="#009E73"/>
-      <rect x="480" y="312" width="240" height="8" fill="#E69F00"/>
-      <rect x="720" y="312" width="240" height="8" fill="#CC79A7"/>
-      <rect x="960" y="312" width="240" height="8" fill="#D55E00"/>
-    </g>
-    <!-- desenho abstrato: dois sítios -->
-    <g transform="translate(860 64)">
-      <rect x="0" y="0" width="128" height="150" rx="10" fill="none" stroke="#8FB8DE" stroke-opacity="0.55" stroke-width="2"/>
-      <rect x="168" y="0" width="128" height="150" rx="10" fill="none" stroke="#8FB8DE" stroke-opacity="0.55" stroke-width="2"/>
-      <g fill="#0072B2"><rect x="16" y="18" width="96" height="22" rx="4"/></g>
-      <g fill="#009E73"><rect x="16" y="50" width="44" height="22" rx="4"/><rect x="68" y="50" width="44" height="22" rx="4"/><rect x="16" y="82" width="96" height="22" rx="4"/></g>
-      <g fill="#E69F00"><rect x="16" y="114" width="96" height="20" rx="4"/></g>
-      <g fill="#009E73"><rect x="184" y="50" width="96" height="22" rx="4"/></g>
-      <g fill="none" stroke="#E69F00" stroke-width="2" stroke-dasharray="5 4"><rect x="184" y="114" width="96" height="20" rx="4"/></g>
-      <g fill="none" stroke="#0072B2" stroke-width="2" stroke-dasharray="5 4"><rect x="184" y="18" width="96" height="22" rx="4"/></g>
-      <path d="M128 124h40" stroke="#C9D6E3" stroke-width="2" stroke-dasharray="5 4"/>
-      <text x="64" y="176" fill="#C9D6E3" font-size="13" text-anchor="middle">DC1</text>
-      <text x="232" y="176" fill="#C9D6E3" font-size="13" text-anchor="middle">DC2</text>
-    </g>
-    <!-- texto -->
-    <text x="56" y="70" fill="#8FB8DE" font-size="14" font-weight="700" letter-spacing="2.5">PROPOSTA DE ARQUITETURA · DESAFIO TÉCNICO</text>
-    <text x="56" y="122" fill="#FFFFFF" font-size="44" font-weight="700">Plataforma de Entrega e Execução</text>
-    <text x="56" y="156" fill="#C9D6E3" font-size="20">Secretaria da Fazenda · on-premises · dois datacenters</text>
-    <g font-weight="700" fill="#FFFFFF" font-size="34">
-      <text x="56" y="240">60</text>
-      <text x="186" y="240">12</text>
-      <text x="316" y="240">5</text>
-      <text x="446" y="240">2</text>
-      <text x="576" y="240">12</text>
-      <text x="706" y="240">12</text>
-    </g>
-    <g fill="#8FB8DE" font-size="14">
-      <text x="56" y="264">aplicações</text>
-      <text x="186" y="264">times</text>
-      <text x="316" y="264">clusters</text>
-      <text x="446" y="264">datacenters</text>
-      <text x="576" y="264">decisões</text>
-      <text x="706" y="264">figuras</text>
-    </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" font-family="Helvetica, Arial, sans-serif">
+  <title>Plataforma de entrega e execução, Secretaria da Fazenda</title>
+  <desc>60 aplicações e 12 times, com cinco clusters em dois datacenters: plataforma, desenvolvimento, homologação e produção em DC1; produção e réplicas da plataforma em DC2.</desc>
+
+  <rect x="0.5" y="0.5" width="1199" height="299" rx="12" fill="#F7F8FA" stroke="#D1D5DB"/>
+
+  <!-- texto -->
+  <text x="60" y="128" fill="#1F2937" font-size="40" font-weight="700">Plataforma de entrega e execução</text>
+  <text x="60" y="180" fill="#4B5563" font-size="24">Secretaria da Fazenda: 60 aplicações e 12 times,</text>
+  <text x="60" y="212" fill="#4B5563" font-size="24">cinco clusters em dois datacenters.</text>
+
+  <!-- topologia em miniatura -->
+  <g font-size="17" fill="#1F2937">
+    <rect x="770" y="36" width="196" height="228" rx="10" fill="#FFFFFF" stroke="#9CA3AF"/>
+    <text x="788" y="66" font-size="17" font-weight="700" fill="#374151">DC1</text>
+    <rect x="788" y="80" width="160" height="36" rx="6" fill="#E6F0FA" stroke="#0072B2" stroke-width="1.5"/>
+    <text x="802" y="104">plat-dc1</text>
+    <rect x="788" y="124" width="160" height="36" rx="6" fill="#E3F4EE" stroke="#009E73" stroke-width="1.5"/>
+    <text x="802" y="148">dev-dc1</text>
+    <rect x="788" y="168" width="160" height="36" rx="6" fill="#E3F4EE" stroke="#009E73" stroke-width="1.5"/>
+    <text x="802" y="192">hml-dc1</text>
+    <rect x="788" y="212" width="160" height="36" rx="6" fill="#E3F4EE" stroke="#009E73" stroke-width="1.5"/>
+    <text x="802" y="236">prd-dc1</text>
+
+    <rect x="986" y="36" width="174" height="228" rx="10" fill="#FFFFFF" stroke="#9CA3AF"/>
+    <text x="1004" y="66" font-size="17" font-weight="700" fill="#374151">DC2</text>
+    <rect x="1004" y="80" width="138" height="36" rx="6" fill="#E6F0FA" stroke="#0072B2" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="1016" y="104" font-size="15">réplicas em VM</text>
+    <rect x="1004" y="212" width="138" height="36" rx="6" fill="#E3F4EE" stroke="#009E73" stroke-width="1.5"/>
+    <text x="1016" y="236">prd-dc2</text>
+
+    <!-- replicação da plataforma entre os sítios -->
+    <path d="M948 98H1004" stroke="#6B7280" stroke-width="1.5" stroke-dasharray="5 4" fill="none"/>
   </g>
 </svg>

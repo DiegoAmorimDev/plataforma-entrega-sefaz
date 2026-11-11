@@ -15,8 +15,8 @@ custa mais, porque o time passa a responder pelo que escolheu trocar.
 ### Dia 1, pela manhã: o pedido
 
 O time abre um merge request no repositório `catalogo-apps` com uma ficha de cerca de cinquenta
-linhas. A ficha é a única coisa que o time preenche para existir na plataforma. O exemplo comentado
-está em [`exemplos/catalogo/exemplo-aplicacao.yaml`](../exemplos/catalogo/exemplo-aplicacao.yaml);
+linhas de configuração, fora os comentários. A ficha é a única coisa que o time preenche para
+existir na plataforma. O exemplo comentado está em [`exemplos/catalogo/exemplo-aplicacao.yaml`](../exemplos/catalogo/exemplo-aplicacao.yaml);
 o trecho abaixo mostra as partes que mais pesam.
 
 ```yaml

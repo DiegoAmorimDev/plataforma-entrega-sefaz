@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/capa.svg" alt="Plataforma de Entrega e Execução — Secretaria da Fazenda. 60 aplicações, 12 times, 5 clusters, 2 datacenters, 12 decisões, 12 figuras" width="100%">
+<img src="docs/assets/capa.svg" alt="Plataforma de entrega e execução da Secretaria da Fazenda: 60 aplicações e 12 times, com cinco clusters em dois datacenters" width="100%">
 
 <p>
 <a href="#a-proposta-em-uma-página"><b>Proposta</b></a> ·
@@ -13,34 +13,36 @@
 
 </div>
 
-Proposta de arquitetura e plano de implantação para modernizar a plataforma da Secretaria da
-Fazenda: 60 aplicações em produção, 12 times de desenvolvimento, infraestrutura on-premises
-virtualizada.
+Resposta ao desafio técnico: arquitetura e plano de implantação para modernizar a plataforma da
+Secretaria da Fazenda, com 60 aplicações em produção, 12 times de desenvolvimento e infraestrutura
+on-premises virtualizada.
 
-O documento responde aos oito tópicos do desafio. O diretório [`exemplos/`](exemplos/) traz os
-artefatos que sustentam o desenho — pipeline, manifestos GitOps, chart, política de admissão,
-regras de alerta, borda e infraestrutura — em arquivos que podem ser lidos e criticados linha a
-linha.
+O documento responde aos oito tópicos do desafio, um arquivo por tópico. Cada decisão vem com a
+alternativa descartada e o custo aceito, e o texto diz onde o desenho ainda é fraco: doze pontos
+de falha que permanecem e a expectativa de migrar de 40 a 45 das 60 aplicações em doze meses.
+
+O diretório [`exemplos/`](exemplos/) traz os artefatos que sustentam o desenho: pipeline,
+manifestos GitOps, chart, política de admissão, regras de alerta, borda e infraestrutura, com a
+sintaxe real de cada ferramenta.
 
 **Figura 1.1 — Panorama da plataforma.**
 
 ![Panorama da plataforma: o cluster de plataforma e os clusters de execução em DC1, a produção e as réplicas em DC2, a borda, a zona de banco e a vigilância externa](docs/diagramas/panorama.drawio.svg)
 
-A topologia física, com a quantidade de nós de cada cluster, está na Figura 2.1, em
+As cores seguem a convenção de [Como ler os diagramas](#como-ler-os-diagramas). A topologia
+física, com a quantidade de nós de cada cluster, está na Figura 2.1, em
 [docs/02](docs/02-topologia.md).
-
----
 
 ## Por onde começar
 
 | Tempo | Caminho |
 |---|---|
-| **5 minutos** | Esta página: a Figura 1.1 e as cinco teses logo abaixo |
-| **Conferir o enunciado** | [O enunciado, item por item](#o-enunciado-item-por-item): cada pergunta do desafio com a resposta curta e o link para o documento do tópico |
-| **20 minutos** | [docs/01](docs/01-visao-geral.md), [docs/03](docs/03-cicd.md) e [docs/05](docs/05-resiliencia.md): o desenho, o caminho do commit até produção e o que acontece quando um datacenter cai |
-| **Leitura técnica** | [docs/09](docs/09-gitops-argocd.md) com [`exemplos/gitops/`](exemplos/gitops/), e [docs/04](docs/04-observabilidade.md) com [`exemplos/observabilidade/`](exemplos/observabilidade/) |
-| **Decisões** | As [doze ADRs](#decisões-de-arquitetura), cada uma com a alternativa descartada e o critério que a faria mudar |
-| **Limites declarados** | Os pontos de falha que permanecem, em [docs/05](docs/05-resiliencia.md), e a expectativa real de migração, em [docs/08](docs/08-plano-evolucao.md) |
+| 5 minutos | Esta página: a Figura 1.1 e as cinco teses logo abaixo |
+| Limites declarados | Os pontos de falha que permanecem, em [docs/05](docs/05-resiliencia.md), e a expectativa real de migração, em [docs/08](docs/08-plano-evolucao.md) |
+| Conferir o enunciado | [O enunciado, item por item](#o-enunciado-item-por-item): cada pergunta do desafio com a resposta curta e o link para o documento do tópico |
+| 20 minutos | [docs/01](docs/01-visao-geral.md), [docs/03](docs/03-cicd.md) e [docs/05](docs/05-resiliencia.md): o desenho, o caminho do commit até produção e o que acontece quando um datacenter cai |
+| Leitura técnica | [docs/09](docs/09-gitops-argocd.md) com [`exemplos/gitops/`](exemplos/gitops/), e [docs/04](docs/04-observabilidade.md) com [`exemplos/observabilidade/`](exemplos/observabilidade/) |
+| Decisões | As [doze ADRs](#decisões-de-arquitetura), cada uma com a alternativa descartada e o critério que a faria mudar |
 
 ## A proposta em uma página
 
@@ -62,33 +64,21 @@ o cluster para o estado declarado.
 manifesto. Nenhum estágio reconstrói a imagem, então o que foi testado é bit a bit o que executa.
 <br><sub>Onde ver: [ADR-007](docs/adr/ADR-007-promocao-por-digest.md) · [ADR-010](docs/adr/ADR-010-promocao-por-merge-request.md) · [`promocao.yml`](exemplos/ci/templates/promocao.yml) · [`exigir-imagem-assinada.yaml`](exemplos/politicas/exigir-imagem-assinada.yaml)</sub>
 
-**4 · O alerta que acorda alguém nasce de orçamento de erro.** O time de plataforma mede nível de
-serviço por aplicação e dispara chamada telefônica apenas quando a taxa de consumo do orçamento
-indica que ele acaba em poucos dias. O resto vira chamado ou fica no painel.
+**4 · O alerta que acorda alguém nasce de orçamento de erro.** Cada aplicação declara o nível de
+serviço, e a chamada telefônica só acontece quando o ritmo de erros esgotaria o orçamento do mês
+em poucos dias. A regra exige duas janelas ao mesmo tempo, uma hora e cinco minutos, para não
+disparar por um soluço. O resto vira chamado ou fica no painel.
 <br><sub>Onde ver: [docs/04](docs/04-observabilidade.md) · [`prometheus-rules.yaml`](exemplos/observabilidade/prometheus-rules.yaml) · [`alertmanager.yaml`](exemplos/observabilidade/alertmanager.yaml)</sub>
 
 **5 · A migração acontece por onda, com o tráfego decidindo.** O HAProxy fica na frente do legado
 e da plataforma nova ao mesmo tempo. Cada aplicação migrada passa a receber tráfego por regra de
-rota, e volta para o legado invertendo essa regra. Nenhuma onda depende da anterior ter terminado.
+rota, e volta para o legado invertendo essa regra, sem afetar as outras.
 <br><sub>Onde ver: [docs/08](docs/08-plano-evolucao.md) · [`haproxy.cfg`](exemplos/borda/haproxy.cfg)</sub>
-
-## Ferramentas por plano
-
-Cada selo tem a cor do plano a que a ferramenta pertence, a mesma das figuras.
-
-| Plano | Ferramentas |
-|---|---|
-| **Entrega** | ![GitLab CI](https://img.shields.io/badge/GitLab%20CI-0072B2?style=flat-square&logo=gitlab&logoColor=white) ![Harbor](https://img.shields.io/badge/Harbor-0072B2?style=flat-square&logo=harbor&logoColor=white) ![Argo CD](https://img.shields.io/badge/Argo%20CD-0072B2?style=flat-square&logo=argo&logoColor=white) ![SonarQube](https://img.shields.io/badge/SonarQube-0072B2?style=flat-square&logo=sonarqube&logoColor=white) ![Trivy](https://img.shields.io/badge/Trivy-0072B2?style=flat-square&logo=trivy&logoColor=white) ![Cosign](https://img.shields.io/badge/Cosign-0072B2?style=flat-square) ![Kyverno](https://img.shields.io/badge/Kyverno-0072B2?style=flat-square) ![Keycloak](https://img.shields.io/badge/Keycloak-0072B2?style=flat-square&logo=keycloak&logoColor=white) ![Terraform](https://img.shields.io/badge/Terraform-0072B2?style=flat-square&logo=terraform&logoColor=white) ![Ansible](https://img.shields.io/badge/Ansible-0072B2?style=flat-square&logo=ansible&logoColor=white) |
-| **Execução** | ![OpenShift](https://img.shields.io/badge/OpenShift-009E73?style=flat-square&logo=redhatopenshift&logoColor=white) ![RKE2 sob Rancher](https://img.shields.io/badge/RKE2%20sob%20Rancher-009E73?style=flat-square&logo=rancher&logoColor=white) ![Helm](https://img.shields.io/badge/Helm-009E73?style=flat-square&logo=helm&logoColor=white) ![Kustomize](https://img.shields.io/badge/Kustomize-009E73?style=flat-square&logo=kubernetes&logoColor=white) ![Argo Rollouts](https://img.shields.io/badge/Argo%20Rollouts-009E73?style=flat-square&logo=argo&logoColor=white) ![Spring Boot](https://img.shields.io/badge/Spring%20Boot-009E73?style=flat-square&logo=springboot&logoColor=white) ![vSphere](https://img.shields.io/badge/VMware%20vSphere-009E73?style=flat-square&logo=vmware&logoColor=white) |
-| **Dados e segredos** | ![Oracle](https://img.shields.io/badge/Oracle-B87D00?style=flat-square&logo=oracle&logoColor=white) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-B87D00?style=flat-square&logo=postgresql&logoColor=white) ![Patroni](https://img.shields.io/badge/Patroni-B87D00?style=flat-square) ![Conjur](https://img.shields.io/badge/CyberArk%20Conjur-B87D00?style=flat-square) ![External Secrets](https://img.shields.io/badge/External%20Secrets-B87D00?style=flat-square) ![MinIO](https://img.shields.io/badge/MinIO-B87D00?style=flat-square&logo=minio&logoColor=white) ![Velero](https://img.shields.io/badge/Velero-B87D00?style=flat-square) |
-| **Observação** | ![Prometheus](https://img.shields.io/badge/Prometheus-B05A8C?style=flat-square&logo=prometheus&logoColor=white) ![Thanos](https://img.shields.io/badge/Thanos-B05A8C?style=flat-square&logo=thanos&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-B05A8C?style=flat-square&logo=grafana&logoColor=white) ![Loki](https://img.shields.io/badge/Loki-B05A8C?style=flat-square) ![Tempo](https://img.shields.io/badge/Tempo-B05A8C?style=flat-square) ![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-B05A8C?style=flat-square&logo=opentelemetry&logoColor=white) |
-| **Tráfego** | ![HAProxy](https://img.shields.io/badge/HAProxy-D55E00?style=flat-square) ![Apache](https://img.shields.io/badge/Apache-D55E00?style=flat-square&logo=apache&logoColor=white) ![DNS](https://img.shields.io/badge/DNS%20com%20TTL%20de%2060%20s-D55E00?style=flat-square) |
 
 ## O enunciado, item por item
 
-Cada tópico do desafio tem um documento próprio, na mesma ordem do enunciado. Abaixo, cada
-pergunta do enunciado aparece com a resposta em uma ou duas frases e o link para a seção que a
-detalha. O detalhe mora só no documento; aqui fica o caminho até ele.
+Cada tópico do desafio tem um documento próprio, na ordem do enunciado. Para cada pergunta do
+enunciado, as tabelas abaixo dão a resposta curta e o link para a seção que a detalha.
 
 | # | Tópico do desafio | Documento completo |
 |---|---|---|
@@ -103,7 +93,7 @@ detalha. O detalhe mora só no documento; aqui fica o caminho até ele.
 
 ### 1 · Visão geral da arquitetura
 
-**Documento completo → [docs/01-visao-geral.md](docs/01-visao-geral.md)**
+**Documento completo: [docs/01-visao-geral.md](docs/01-visao-geral.md)**
 
 | O enunciado pede | Resposta curta | Detalhe |
 |---|---|---|
@@ -112,16 +102,16 @@ detalha. O detalhe mora só no documento; aqui fica o caminho até ele.
 
 ### 2 · Topologia de clusters e ambientes
 
-**Documento completo → [docs/02-topologia.md](docs/02-topologia.md)**
+**Documento completo: [docs/02-topologia.md](docs/02-topologia.md)**
 
 | O enunciado pede | Resposta curta | Detalhe |
 |---|---|---|
-| Quantos clusters, onde ficam e para que serve cada um | Cinco. Em DC1: `plat-dc1` (esteira, registry, observabilidade e Argo CD), `dev-dc1` em RKE2, `hml-dc1` e `prd-dc1`. Em DC2: `prd-dc2`. A produção são dois clusters independentes, e não um cluster esticado entre os sítios (ADR-002) | [O inventário](docs/02-topologia.md#o-inventário) · [Por que cada cluster existe](docs/02-topologia.md#por-que-cada-cluster-existe) |
-| Como separar desenvolvimento, homologação e produção | Por cluster, e não só por namespace, em quatro camadas ao mesmo tempo: cluster, rede, dado (sintético, anonimizado ou real) e permissão. Em produção, só o Argo CD escreve | [Como os ambientes se separam](docs/02-topologia.md#como-os-ambientes-se-separam) |
+| Quantos clusters, onde ficam e para que serve cada um | Cinco. Em DC1: `plat-dc1` (esteira, registry, observabilidade e Argo CD), `dev-dc1` em RKE2, `hml-dc1` e `prd-dc1`. Em DC2: `prd-dc2`. A produção são dois clusters independentes, um por sítio (ADR-002) | [O inventário](docs/02-topologia.md#o-inventário) · [Por que cada cluster existe](docs/02-topologia.md#por-que-cada-cluster-existe) |
+| Como separar desenvolvimento, homologação e produção | Por cluster, em quatro camadas ao mesmo tempo: cluster, rede, dado (sintético, anonimizado ou real) e permissão. Em produção, só o Argo CD escreve | [Como os ambientes se separam](docs/02-topologia.md#como-os-ambientes-se-separam) |
 
 ### 3 · Fluxo de entrega (CI/CD)
 
-**Documento completo → [docs/03-cicd.md](docs/03-cicd.md)** · aprofundamento em [docs/09-gitops-argocd.md](docs/09-gitops-argocd.md)
+**Documento completo: [docs/03-cicd.md](docs/03-cicd.md)** · aprofundamento em [docs/09-gitops-argocd.md](docs/09-gitops-argocd.md)
 
 | O enunciado pede | Resposta curta | Detalhe |
 |---|---|---|
@@ -129,20 +119,20 @@ detalha. O detalhe mora só no documento; aqui fica o caminho até ele.
 | Quais verificações bloqueiam e quais apenas informam | Bloqueia o que o time consegue corrigir hoje e indica risco real: teste, cobertura das linhas alteradas abaixo de 80 por cento, quality gate do código novo, vulnerabilidade crítica com correção publicada, segredo no código e assinatura ausente. Informa a dívida acumulada e o que depende de terceiro: cobertura total, vulnerabilidade sem correção e teste de carga sem linha de base | [O que bloqueia e o que apenas informa](docs/03-cicd.md#o-que-bloqueia-e-o-que-apenas-informa) |
 | Como garantir que o artefato testado é o que vai para produção | A imagem é construída uma vez e referenciada pelo digest `sha256:...`. A promoção é um commit que copia esse digest, e o cluster recusa imagem não assinada (ADR-007) | [Como o artefato testado é o que vai para produção](docs/03-cicd.md#como-o-artefato-testado-é-o-que-vai-para-produção) |
 | Como é feito o deploy | Por GitOps: o Argo CD aplica o que está no repositório de manifestos, e o pipeline nunca recebe credencial de cluster (ADR-003). A produção muda por merge request aprovado por duas pessoas do time (ADR-010) | [Como a implantação acontece](docs/03-cicd.md#como-a-implantação-acontece) |
-| Como é feito o rollback | Em três níveis: automático durante o canário do nível 1; `git revert` do commit do digest, em um a dois minutos; e `argocd app rollback` quando o GitLab está fora. O limite fica declarado: voltar a aplicação não volta o banco, por isso a migração é feita em duas etapas, expandir e contrair | [Como o retorno de versão funciona](docs/03-cicd.md#como-o-retorno-de-versão-funciona) |
+| Como é feito o retorno de versão (rollback) | Em três níveis: automático durante o canário do nível 1; `git revert` do commit do digest, em um a dois minutos; e `argocd app rollback` quando o GitLab está fora. O limite fica declarado: voltar a aplicação não volta o banco, por isso a migração é feita em duas etapas, expandir e contrair | [Como o retorno de versão funciona](docs/03-cicd.md#como-o-retorno-de-versão-funciona) |
 
 ### 4 · Observabilidade e operação
 
-**Documento completo → [docs/04-observabilidade.md](docs/04-observabilidade.md)**
+**Documento completo: [docs/04-observabilidade.md](docs/04-observabilidade.md)**
 
 | O enunciado pede | Resposta curta | Detalhe |
 |---|---|---|
 | O que coletar (métricas, logs e traces) e como as ferramentas se integram | A métrica é raspada pelo Prometheus de cada cluster, com o histórico no Thanos. Log e trace passam pelo coletor OpenTelemetry até o Loki e o Tempo. Tudo aparece no Grafana, e a retenção longa fica no MinIO (Figura 4.1) | [Como os sinais fluem](docs/04-observabilidade.md#como-os-sinais-fluem) · [O que coletar](docs/04-observabilidade.md#o-que-coletar) |
-| Como os alertas devem funcionar para serem levados a sério | Cinco regras: chamada telefônica só pelo consumo do orçamento de erro, com duas janelas simultâneas (1 hora e 5 minutos a 14,4 vezes); alerta sobre sintoma, e não sobre causa; todo alerta com dono e roteiro de resposta; agrupamento e inibição; e revisão quinzenal que rebaixa o alerta com menos de 50 por cento de ação | [Como os alertas funcionam](docs/04-observabilidade.md#como-os-alertas-funcionam-para-serem-levados-a-sério) |
+| Como os alertas devem funcionar para serem levados a sério | Cinco regras: chamada telefônica só pelo consumo do orçamento de erro, com duas janelas simultâneas (1 hora e 5 minutos a 14,4 vezes); alerta sobre o sintoma que o usuário sente; todo alerta com dono e roteiro de resposta; agrupamento e inibição; e revisão quinzenal que rebaixa o alerta com menos de 50 por cento de ação | [Como os alertas funcionam](docs/04-observabilidade.md#como-os-alertas-funcionam-para-serem-levados-a-sério) |
 
 ### 5 · Resiliência e continuidade
 
-**Documento completo → [docs/05-resiliencia.md](docs/05-resiliencia.md)**
+**Documento completo: [docs/05-resiliencia.md](docs/05-resiliencia.md)**
 
 | O enunciado pede | Resposta curta | Detalhe |
 |---|---|---|
@@ -154,26 +144,26 @@ detalha. O detalhe mora só no documento; aqui fica o caminho até ele.
 
 ### 6 · Infraestrutura como código
 
-**Documento completo → [docs/06-iac.md](docs/06-iac.md)**
+**Documento completo: [docs/06-iac.md](docs/06-iac.md)**
 
 | O enunciado pede | Resposta curta | Detalhe |
 |---|---|---|
 | O que fica em código e com quais ferramentas | Quatro camadas. As máquinas virtuais fora do OpenShift usam Terraform com o provedor vSphere e Ansible. Os clusters usam a instalação IPI do OpenShift com `MachineSet`, e o Terraform do Rancher para o RKE2. Os componentes de plataforma ficam no Argo CD. A configuração das ferramentas usa Terraform com os provedores do GitLab, do Harbor, do Keycloak e do Grafana | [As quatro camadas](docs/06-iac.md#as-quatro-camadas-e-as-ferramentas-de-cada-uma) |
 | Onde esse código fica | Em sete repositórios no grupo `plataforma/` do GitLab, separados por quem precisa aprovar cada alteração | [Onde o código fica](docs/06-iac.md#onde-o-código-fica) |
-| Como é revisado e aplicado | Por merge request, com o plano do Terraform comentado nele, e quem revisa lê o plano. A aplicação parte de `main`, num runner dedicado, e nunca da máquina de uma pessoa. Uma verificação diária procura desvios | [Como o código é revisado e aplicado](docs/06-iac.md#como-o-código-é-revisado-e-aplicado) · [O que não entra em código](docs/06-iac.md#o-que-não-entra-em-código-e-por-quê) |
+| Como é revisado e aplicado | Por merge request, com o plano do Terraform comentado nele, e quem revisa lê o plano. A aplicação parte de `main`, num executor dedicado, e nunca da máquina de uma pessoa. Uma verificação diária procura desvios | [Como o código é revisado e aplicado](docs/06-iac.md#como-o-código-é-revisado-e-aplicado) · [O que não entra em código](docs/06-iac.md#o-que-não-entra-em-código-e-por-quê) |
 
 ### 7 · Experiência dos times de desenvolvimento
 
-**Documento completo → [docs/07-experiencia-dev.md](docs/07-experiencia-dev.md)**
+**Documento completo: [docs/07-experiencia-dev.md](docs/07-experiencia-dev.md)**
 
 | O enunciado pede | Resposta curta | Detalhe |
 |---|---|---|
-| Como um time coloca uma aplicação nova em produção | O time abre um merge request com uma ficha de cerca de 50 linhas no catálogo. Com o merge, um pipeline cria o repositório, os namespaces, o caminho no cofre, os manifestos, o painel e os alertas, e o primeiro push chega a desenvolvimento no mesmo dia. A produção recebe a aplicação por um merge request de uma linha, aprovado por duas pessoas do time | [Colocando uma aplicação nova em produção](docs/07-experiencia-dev.md#colocando-uma-aplicação-nova-em-produção) |
+| Como um time coloca uma aplicação nova em produção | O time abre um merge request com uma ficha de cerca de 50 linhas de configuração no catálogo. Com o merge, um pipeline cria o repositório, os namespaces, o caminho no cofre, os manifestos, o painel e os alertas, e o primeiro envio de código chega a desenvolvimento no mesmo dia. A produção recebe a aplicação por um merge request de uma linha, aprovado por duas pessoas do time | [Colocando uma aplicação nova em produção](docs/07-experiencia-dev.md#colocando-uma-aplicação-nova-em-produção) |
 | O que é da plataforma e o que é do time | A plataforma responde pelo que é comum a todas as aplicações: clusters, esteira, registry, cofre, imagem base e observabilidade. O time responde pelo que é específico da sua: código, testes, valores do chart, nível de serviço e o atendimento do alerta da própria aplicação | [Quem responde pelo quê](docs/07-experiencia-dev.md#quem-responde-pelo-quê) |
 
 ### 8 · Plano de evolução
 
-**Documento completo → [docs/08-plano-evolucao.md](docs/08-plano-evolucao.md)**
+**Documento completo: [docs/08-plano-evolucao.md](docs/08-plano-evolucao.md)**
 
 | O enunciado pede | Resposta curta | Detalhe |
 |---|---|---|
@@ -202,8 +192,8 @@ contexto, a alternativa descartada, a consequência aceita e o critério que far
 
 ## Como ler os diagramas
 
-As doze figuras seguem uma convenção só. A cor diz a qual plano a peça pertence; o traço e a forma
-dizem o estado dela. Cada figura tem número e título acima, numerada pelo documento onde está.
+As doze figuras usam a mesma convenção: a cor indica o plano da peça, e o traço e a forma indicam
+o estado. Cada figura tem número e título acima, numerada pelo documento onde está.
 
 | Cor | Plano | Exemplos |
 |---|---|---|
@@ -225,6 +215,18 @@ Os fluxos estão em Mermaid, dentro do próprio texto, para que cada mudança ap
 merge request. O panorama e a topologia estão em draw.io, em [docs/diagramas/](docs/diagramas/): o
 arquivo `.drawio.svg` é a imagem e a fonte editável ao mesmo tempo, e abre direto no draw.io.
 
+## Ferramentas por plano
+
+Cada selo tem a cor do plano a que a ferramenta pertence, a mesma das figuras.
+
+| Plano | Ferramentas |
+|---|---|
+| **Entrega** | ![GitLab CI](https://img.shields.io/badge/GitLab%20CI-0072B2?style=flat-square&logo=gitlab&logoColor=white) ![Harbor](https://img.shields.io/badge/Harbor-0072B2?style=flat-square&logo=harbor&logoColor=white) ![Argo CD](https://img.shields.io/badge/Argo%20CD-0072B2?style=flat-square&logo=argo&logoColor=white) ![SonarQube](https://img.shields.io/badge/SonarQube-0072B2?style=flat-square&logo=sonarqube&logoColor=white) ![Trivy](https://img.shields.io/badge/Trivy-0072B2?style=flat-square&logo=trivy&logoColor=white) ![Cosign](https://img.shields.io/badge/Cosign-0072B2?style=flat-square) ![Kyverno](https://img.shields.io/badge/Kyverno-0072B2?style=flat-square) ![Keycloak](https://img.shields.io/badge/Keycloak-0072B2?style=flat-square&logo=keycloak&logoColor=white) ![Terraform](https://img.shields.io/badge/Terraform-0072B2?style=flat-square&logo=terraform&logoColor=white) ![Ansible](https://img.shields.io/badge/Ansible-0072B2?style=flat-square&logo=ansible&logoColor=white) |
+| **Execução** | ![OpenShift](https://img.shields.io/badge/OpenShift-009E73?style=flat-square&logo=redhatopenshift&logoColor=white) ![RKE2 sob Rancher](https://img.shields.io/badge/RKE2%20sob%20Rancher-009E73?style=flat-square&logo=rancher&logoColor=white) ![Helm](https://img.shields.io/badge/Helm-009E73?style=flat-square&logo=helm&logoColor=white) ![Kustomize](https://img.shields.io/badge/Kustomize-009E73?style=flat-square&logo=kubernetes&logoColor=white) ![Argo Rollouts](https://img.shields.io/badge/Argo%20Rollouts-009E73?style=flat-square&logo=argo&logoColor=white) ![Spring Boot](https://img.shields.io/badge/Spring%20Boot-009E73?style=flat-square&logo=springboot&logoColor=white) ![vSphere](https://img.shields.io/badge/VMware%20vSphere-009E73?style=flat-square&logo=vmware&logoColor=white) |
+| **Dados e segredos** | ![Oracle](https://img.shields.io/badge/Oracle-B87D00?style=flat-square&logo=oracle&logoColor=white) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-B87D00?style=flat-square&logo=postgresql&logoColor=white) ![Patroni](https://img.shields.io/badge/Patroni-B87D00?style=flat-square) ![Conjur](https://img.shields.io/badge/CyberArk%20Conjur-B87D00?style=flat-square) ![External Secrets](https://img.shields.io/badge/External%20Secrets-B87D00?style=flat-square) ![MinIO](https://img.shields.io/badge/MinIO-B87D00?style=flat-square&logo=minio&logoColor=white) ![Velero](https://img.shields.io/badge/Velero-B87D00?style=flat-square) |
+| **Observação** | ![Prometheus](https://img.shields.io/badge/Prometheus-B05A8C?style=flat-square&logo=prometheus&logoColor=white) ![Thanos](https://img.shields.io/badge/Thanos-B05A8C?style=flat-square&logo=thanos&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-B05A8C?style=flat-square&logo=grafana&logoColor=white) ![Loki](https://img.shields.io/badge/Loki-B05A8C?style=flat-square) ![Tempo](https://img.shields.io/badge/Tempo-B05A8C?style=flat-square) ![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-B05A8C?style=flat-square&logo=opentelemetry&logoColor=white) |
+| **Tráfego** | ![HAProxy](https://img.shields.io/badge/HAProxy-D55E00?style=flat-square) ![Apache](https://img.shields.io/badge/Apache-D55E00?style=flat-square&logo=apache&logoColor=white) ![DNS](https://img.shields.io/badge/DNS%20com%20TTL%20de%2060%20s-D55E00?style=flat-square) |
+
 ## Onde o desenho se apoia em operação real
 
 Parte das escolhas vem de operação em produção, em ambiente financeiro regulado que o autor opera
@@ -232,7 +234,7 @@ hoje. Onde a escolha aqui é diferente da de lá, o motivo está registrado.
 
 | Peça | O que o autor opera | O que muda nesta proposta, e por quê |
 |---|---|---|
-| OpenShift | Clusters de produção | Nada. É a razão de o controle de contexto de segurança pesar na escolha (ADR-001) |
+| OpenShift | Clusters de produção | Nada. É por isso que as restrições de segurança do OpenShift (SCC) pesaram na escolha (ADR-001) |
 | GitLab CI | Esteira com quality gate do SonarQube obrigatório | O template central fixado por tag, para doze times em vez de um |
 | SonarQube | Edição Developer, com análise de merge request | Edição Community, com a cobertura do merge request calculada fora dele, até o inventário mostrar o custo da licença (ADR-012) |
 | Argo CD | Implantação por GitOps em ambiente on-premises | Nada no modelo; o desenho de repositório, permissão e contingência está em `docs/09` |
@@ -240,7 +242,7 @@ hoje. Onde a escolha aqui é diferente da de lá, o motivo está registrado.
 | Grafana e OpenTelemetry | Painéis e instrumentação de aplicação | Nada |
 
 Terraform para vSphere e HAProxy em produção o autor não operou. Essas partes foram estudadas e
-desenhadas, e o texto as trata com o mesmo cuidado, sem fingir experiência.
+desenhadas, sem experiência de operação por trás.
 
 ## Artefatos
 
