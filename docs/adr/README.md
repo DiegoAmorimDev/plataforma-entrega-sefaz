@@ -21,3 +21,5 @@ ninguém sabe se a razão original ainda vale.
 | [010](ADR-010-promocao-por-merge-request.md) | Promoção por merge request aberto pela esteira | Argo CD Image Updater ou Kargo |
 | [011](ADR-011-ambiente-por-diretorio.md) | Ambiente é diretório no mesmo branch | Um branch por ambiente |
 | [012](ADR-012-sonarqube-community.md) | SonarQube Community, com cobertura do merge request pelo `diff-cover` | Edição Developer |
+| [013](ADR-013-cache-valkey-por-aplicacao.md) | Cache-aside com Valkey em instância por aplicação, dentro do cluster | Redis, Red Hat Data Grid ou cache compartilhado |
+| [014](ADR-014-leitura-e-particionamento-sem-sharding.md) | Réplica de relatório e particionamento por período, sem sharding | Ler da réplica síncrona; sharding com Citus |
