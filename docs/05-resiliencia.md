@@ -141,6 +141,10 @@ A aplicação precisa colaborar, e isso é responsabilidade do time:
   PostgreSQL, o PgBouncer faz esse papel. No Oracle, o PgBouncer não serve: o pool fica residente
   no banco (DRCP), e o pool da aplicação tem limite por réplica, declarado no catálogo.
 
+**O cache não entra na conta da retomada.** Cada cluster tem o próprio Valkey por aplicação, sem
+replicação entre sítios, e o cache de DC2 começa frio para o nível 2. O banco promovido em DC2
+recebe a leitura inteira, e é dimensionado para isso ([`docs/10`](10-dados.md)).
+
 O backup segue a regra de três cópias, dois meios, um sítio externo. Cópia completa semanal, cópia
 incremental diária, arquivos de registro de transação a cada quinze minutos. **A restauração é
 testada mensalmente**, em ambiente separado, com o tempo cronometrado. Backup que nunca foi
@@ -265,6 +269,7 @@ regra do caminho reverso. Plano de continuidade nunca exercitado é um documento
 | Oracle | Duas instâncias em DC1 com troca automática; espera em DC2 | Troca automática no sítio; entre sítios, decisão humana |
 | PostgreSQL | Patroni com três instâncias; PgBouncer atrás de endereço virtual; etcd de três membros em DC1 e uma máquina de reserva em DC2 | Promoção automática no sítio em menos de 30 segundos; entre sítios, roteiro manual de cerca de 5 minutos |
 | Conjur | Líder e espera em DC1; espera e réplica de leitura em DC2 | Pods continuam com o `Secret` já no cluster |
+| Valkey de aplicação | Nenhuma, de propósito: uma instância por aplicação em cada cluster, sem disco | O Kubernetes recria vazio em segundos; a aplicação lê do banco nesse intervalo |
 | Harbor, GitLab, MinIO | Réplica em DC2 | Promoção manual da réplica, em dezenas de minutos |
 | Argo CD | Alta disponibilidade em `plat-dc1`; contingência desligada em DC2 | Sem implantação nova até voltar ou até a contingência ser ativada |
 | Prometheus e Alertmanager | Um Prometheus e um Alertmanager por cluster, inclusive em `prd-dc2`; cada cluster envia o próprio sinal de vida externo | Cada cluster continua alertando sozinho |
@@ -281,12 +286,14 @@ Esta é a parte que o desenho não resolve, e declará-la é mais útil do que e
 | DNS corporativo | Nada se resolve, nem internamente | Dois servidores, um por sítio | Erro de configuração se propaga aos dois |
 | Diretório corporativo e Keycloak | Ninguém autentica no OpenShift, GitLab, Grafana e Argo CD | Réplica do diretório e instância do Keycloak em DC2; conta local de emergência em cofre físico, com uso auditado | Erro de configuração replicado para a réplica junto com o dado |
 | Borda e DNS público | Contribuinte não alcança nenhuma aplicação | Par de HAProxy em cada sítio; DNS com tempo de vida de 60 segundos | A troca do DNS é manual, decidida em até 5 minutos, e o nível 1 fica sem entrada pública até ela; depende também da cópia guardada pelos clientes |
+| Firewall da entrada de cada sítio | O sítio inteiro fica sem entrada pública, mesmo com HAProxy e clusters saudáveis | Fora deste desenho: é equipamento da equipe de rede. O esperado é um par ativo e passivo por sítio, com estado das conexões sincronizado, atrás de dois enlaces de operadoras distintas | Se for um equipamento só, a falha dele cai na troca manual de DNS da linha anterior. Balanceador na frente do par foi descartado: só se justifica com os dois firewalls ativos, e sozinho vira outro ponto único |
 | Observabilidade em `plat-dc1` | Sem painel e sem consulta global na perda de DC1 | Prometheus e Alertmanager em cada cluster; sinal de vida para vigilância externa | Investigação de incidente em DC2 sem o histórico longo até `plat-dc1` voltar |
 | vCenter | Nenhuma máquina virtual nova; as existentes continuam | vCenter High Availability | Os clusters sobrevivem, mas a plataforma perde a capacidade de crescer |
 | Conjur | Segredo novo e rotação param; pods em execução e pods reagendados continuam, porque o `Secret` já está no cluster | Líder e réplica de espera em DC1, réplica de espera e réplica de leitura em DC2 | Perda da chave de dados do cofre; guardada em cofre físico com custódia dividida |
 | Argo CD central | Sem entrega nova e sem correção de desvio; nada para de executar | Alta disponibilidade em `plat-dc1`, contingência desligada em DC2 | A contingência envelhecer sem ninguém perceber; ativada de verdade no exercício semestral |
 | GitLab | Sem entrega nova; produção continua rodando | Secundário em DC2 com Geo | Promoção manual, de dezenas de minutos |
 | Armazenamento compartilhado | Volumes persistentes indisponíveis | Dois agrupamentos, um por sítio | Aplicação com estado de nível 1 depende de replicação correta entre eles |
+| Cache das aplicações | Latência sobe e o banco recebe a leitura inteira, na falha do Valkey ou na troca de sítio | Banco dimensionado para a carga sem cache; regra do que nunca vai para cache | Aplicação que passou a depender do cache sem ninguém perceber; procurada no teste de carga trimestral com o cache desligado |
 | Equipe de plataforma | Nenhuma alteração avança | Dupla por área, documentação viva | Equipe pequena com pessoa única em alguma área; o maior risco dos doze meses |
 | Dependência externa | Integração com outros órgãos indisponível | Disjuntor, fila com repetição, modo degradado | Fora da governança da Secretaria |
 

@@ -43,7 +43,8 @@ Fora da tabela, em máquina virtual ou em equipamento, ficam estas peças:
   DC2 desligada, que entra no roteiro de promoção ([`docs/05`](05-resiliencia.md)). O banco de
   homologação fica numa máquina virtual na zona de banco de DC1, na VLAN de homologação.
 - **Os pares de HAProxy**, um por sítio. Firewall e WAF são equipamento da equipe de rede, na
-  entrada de cada sítio, antes do par de HAProxy. O Apache e o legado existem nos dois sítios, com
+  entrada de cada sítio, antes do par de HAProxy. A redundância deles não é desenhada aqui e por
+  isso entra nos pontos de falha que permanecem ([`docs/05`](05-resiliencia.md#pontos-de-falha-que-permanecem)). O Apache e o legado existem nos dois sítios, com
   o Apache de DC2 como reserva, como mostra [`exemplos/borda/haproxy.cfg`](../exemplos/borda/haproxy.cfg).
 - **O Rancher**, em três máquinas virtuais próprias em DC1, num RKE2 de gestão que não hospeda
   aplicação e por isso não conta entre os cinco clusters. A alternativa descartada é instalá-lo no
