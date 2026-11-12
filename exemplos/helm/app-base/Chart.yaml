@@ -1,0 +1,8 @@
+# Chart base da plataforma. Publicado no Harbor como artefato OCI
+# (oci://harbor.sefaz.interno/charts) e consumido pelos overlays do manifestos-apps.
+# A versão sobe ambiente por ambiente: o overlay de dev pega a nova primeiro, prd por último.
+apiVersion: v2
+name: app-base
+description: Chart base das aplicações da plataforma (Deployment, Route ou Ingress, segredo, cache opcional)
+type: application
+version: 4.2.0

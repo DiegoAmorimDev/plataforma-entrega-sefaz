@@ -43,6 +43,8 @@ física, com a quantidade de nós de cada cluster, está na Figura 2.1, em
 | 20 minutos | [docs/01](docs/01-visao-geral.md), [docs/03](docs/03-cicd.md) e [docs/05](docs/05-resiliencia.md): o desenho, o caminho do commit até produção e o que acontece quando um datacenter cai |
 | Leitura técnica | [docs/09](docs/09-gitops-argocd.md) com [`exemplos/gitops/`](exemplos/gitops/), [docs/10](docs/10-dados.md) com o cache do chart base, e [docs/04](docs/04-observabilidade.md) com [`exemplos/observabilidade/`](exemplos/observabilidade/) |
 | Decisões | As [catorze ADRs](#decisões-de-arquitetura), cada uma com a alternativa descartada e o critério que a faria mudar |
+| Vídeo de defesa | [No YouTube](https://youtu.be/NJb-fFw0nLE): a arquitetura, as respostas às perguntas do desafio a partir de 46:38 e o laboratório rodando a partir de 1:04:23 |
+| Laboratório | [`plataforma-entrega-lab`, no GitLab](https://gitlab.com/plataforma-entrega-lab): versão reduzida numa VM só, com quatro clusters k3d, Argo CD, Conjur, External Secrets, HAProxy e o alerta por orçamento de erro. A aplicação, o repositório de manifestos e os scripts de montagem |
 
 ## A proposta em uma página
 
