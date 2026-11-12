@@ -1,0 +1,142 @@
+{{/*
+Cache da aplicação: uma instância de Valkey no namespace dela (ADR-013, docs/10).
+
+Só existe com cache.habilitado: true, que o processo de catálogo liga quando a
+ficha da aplicação declara cache. A NetworkPolicy que deixa apenas os pods da
+aplicação chegarem aqui nasce do catálogo, como as demais.
+
+Cache, não banco: sem disco, sem réplica, sem Sentinel. Se o pod cai, o
+Kubernetes recria vazio em segundos, e a aplicação lê do banco nesse intervalo.
+O banco é dimensionado para a carga sem cache.
+
+A senha vem do Conjur. O time declara o mesmo caminho duas vezes em
+values.segredos, com a variável VALKEY_SENHA: no destino "cache", que este
+template lê, e no destino padrão, que vira variável de ambiente da aplicação.
+*/}}
+{{- if .Values.cache.habilitado }}
+{{- $nome := printf "%s-cache" (include "app-base.fullname" .) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $nome }}
+  labels: {{- include "app-base.labels" . | nindent 4 }}
+data:
+  valkey.conf: |
+    # Nada vai para disco: dado com sigilo fiscal não chega a volume, e
+    # reiniciar é começar vazio.
+    save ""
+    appendonly no
+    dir /tmp
+    # Teto abaixo do limite do contêiner. Cheio, descarta a chave menos usada;
+    # não derruba o pod por falta de memória.
+    maxmemory {{ .Values.cache.memoriaMaxima }}
+    maxmemory-policy allkeys-lru
+    # Um erro de código na aplicação não apaga o cache inteiro de uma vez,
+    # mandando toda a leitura ao banco no mesmo segundo.
+    rename-command FLUSHALL ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $nome }}
+  labels: {{- include "app-base.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate: duas instâncias ao mesmo tempo dividiriam as escritas de cache
+  # entre elas durante a troca, sem ganho nenhum.
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $nome }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $nome }}
+        sefaz.io/time: {{ .Values.time }}
+        sefaz.io/ambiente: {{ .Values.ambiente }}
+      annotations:
+        # Reinicia quando a senha muda no Conjur, como a aplicação.
+        reloader.stakater.com/auto: "true"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: valkey
+          image: {{ .Values.imagensPlataforma.valkey }}
+          args:
+            - /etc/valkey/valkey.conf
+            - --requirepass
+            - $(VALKEY_SENHA)
+          env:
+            - name: VALKEY_SENHA
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "app-base.fullname" . }}-cache
+                  key: VALKEY_SENHA
+          ports:
+            - { name: valkey, containerPort: 6379 }
+          readinessProbe:
+            tcpSocket: { port: valkey }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: {{ .Values.cache.memoriaContainer }} }
+            limits:   { memory: {{ .Values.cache.memoriaContainer }} }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: config, mountPath: /etc/valkey }
+            - { name: tmp,    mountPath: /tmp }
+        # Taxa de acerto e memória para o Prometheus. O alerta dela é
+        # informativo: acerto baixo é desenho de cache, não incidente.
+        - name: exportador
+          image: {{ .Values.imagensPlataforma.valkeyExportador }}
+          env:
+            - { name: REDIS_ADDR, value: "redis://localhost:6379" }
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "app-base.fullname" . }}-cache
+                  key: VALKEY_SENHA
+          ports:
+            - { name: metricas, containerPort: 9121 }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: config
+          configMap: { name: {{ $nome }} }
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 16Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $nome }}
+  labels: {{- include "app-base.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $nome }}
+  ports:
+    - { name: valkey, port: 6379, targetPort: valkey }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $nome }}
+  labels: {{- include "app-base.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $nome }}
+  podMetricsEndpoints:
+    - port: metricas
+      interval: 30s
+{{- end }}
