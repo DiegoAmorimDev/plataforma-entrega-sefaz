@@ -94,6 +94,14 @@ de aprender a operar um operador de banco durante uma migração de plataforma �
 > ficar fora do GitOps, com processo próprio de mudança. A reavaliação acontece quando houver
 > demanda por muitos bancos pequenos e de vida curta (ADR-004).*
 
+**O banco aguenta a carga inteira sem cache e sem réplica de leitura**, e os dois entram como
+folga, não como capacidade. O cache segue o padrão cache-aside, em duas camadas: Caffeine dentro da
+JVM para tabela de referência, e uma instância de **Valkey** por aplicação, no namespace dela, sem
+disco (ADR-013). Decisão com efeito jurídico, como a emissão de certidão, nunca lê de cache. O
+relatório pesado lê de uma réplica dedicada, e nunca da réplica síncrona que protege a troca de
+papel. Não há sharding: cada aplicação já tem o próprio banco, e a tabela que cresce sem parar é
+particionada por período (ADR-014). O desenho completo está em [`docs/10`](10-dados.md).
+
 ### Plano de observação
 
 **Prometheus** raspa a métrica da aplicação dentro de cada cluster, avalia ali mesmo as regras de

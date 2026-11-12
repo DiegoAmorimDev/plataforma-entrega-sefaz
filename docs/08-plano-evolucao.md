@@ -116,6 +116,8 @@ usável.
 - Plantão formalizado, com escala, roteiros de resposta e roteamento por time.
 - Alertas de orçamento de erro para as aplicações piloto.
 - Velero com backup dos quatro clusters e primeira restauração testada.
+- Valkey como opção do chart base, para a aplicação da primeira onda que medir necessidade de cache
+  (ADR-013).
 - Primeira onda de migração: 10 aplicações da classe A, de nível 2 e 3.
 
 **Entregável:** 10 aplicações em produção na plataforma nova, com retorno de versão exercitado em

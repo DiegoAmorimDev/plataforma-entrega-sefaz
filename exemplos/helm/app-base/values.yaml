@@ -63,6 +63,8 @@ autoscaling:
 imagensPlataforma:
   liquibase: harbor.sefaz.interno/plataforma/liquibase@sha256:5d3a8f0c91e47b62a1d6c0b9e8f2347a56c1d0e9b83f4a7261c5d0e8b9a3f714   # 4.29
   fumaca:    harbor.sefaz.interno/plataforma/teste-fumaca@sha256:c7e12b94f0a35d86e1b7c4a920d3f58e61a0b7c3d9e4f2815a6b0c7d3e9f1a42   # v3
+  valkey:    harbor.sefaz.interno/plataforma/valkey@sha256:9b4e0d7a2c61f83e5d0a9c47b1e86f2d3a05c9e7b4d18f62a0e3c5b7d9f14a28         # 8.1
+  valkeyExportador: harbor.sefaz.interno/plataforma/redis-exporter@sha256:3e8a1c6f0b92d47e5a1c0d8b7f3e26a94c5d0b1e7a3f8c62d4b0e9a5c7f1d36b   # 1.67
 
 # Orçamento de interrupção. Impede que a drenagem de dois nós em sequência
 # durante manutenção derrube a aplicação inteira.
@@ -76,6 +78,15 @@ terminationGracePeriodSeconds: 45
 # (templates/ganchos.yaml). Exige o segredo de destino "migracao".
 migracao:
   habilitada: false
+
+# Cache da aplicação, uma instância de Valkey no namespace dela
+# (templates/cache.yaml, ADR-013). Desligado por padrão: o cache local na JVM,
+# com Caffeine, resolve a tabela de referência sem infraestrutura nenhuma. O
+# processo de catálogo liga quando a ficha declara cache.
+cache:
+  habilitado: false
+  memoriaMaxima: 200mb       # teto do Valkey; descarta a chave menos usada
+  memoriaContainer: 256Mi    # folga acima do teto para o próprio processo
 
 # Segredos: só o caminho no Conjur e o nome da variável que a aplicação lê,
 # nunca o valor. O chart gera um ExternalSecret por destino, lendo

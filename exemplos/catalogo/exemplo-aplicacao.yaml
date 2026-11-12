@@ -55,6 +55,20 @@ dependencias:
       # repetiria o erro que o H2 comete: o dialeto que diverge só apareceria em
       # homologação.
       ambiente_dev: oracle-conteiner
+  # Liga o Valkey do chart base e a NetworkPolicy que só deixa os pods da
+  # aplicação chegarem nele (ADR-013, docs/10). O prazo de validade é o atraso
+  # máximo entre os dois sítios: a escrita em DC1 não apaga a chave em DC2.
+  cache:
+    prazo_maximo: 10m
+    memoria: 256Mi
+    # Revisado pela plataforma no merge request. O que decide ato com efeito
+    # jurídico, como a autorização da nota, nunca vai para cache.
+    conteudo:
+      - "Tabelas NCM, CFOP e alíquota por UF"
+      - "Lista de municípios e feriados, para o cálculo de prazo exibido"
+  # Relatório lê da réplica de relatório, até 15 minutos atrasada, por uma
+  # segunda fonte de dados no módulo de relatório (ADR-014).
+  replica_relatorio: false
   servicos:
     - sefaz-autorizador
     - sefaz-certificado-digital

@@ -20,6 +20,7 @@ pandoc \
   docs/07-experiencia-dev.md \
   docs/08-plano-evolucao.md \
   docs/09-gitops-argocd.md \
+  docs/10-dados.md \
   docs/adr/README.md \
   docs/adr/ADR-001-openshift-producao-rancher-dev.md \
   docs/adr/ADR-002-dois-clusters-independentes.md \
@@ -33,6 +34,8 @@ pandoc \
   docs/adr/ADR-010-promocao-por-merge-request.md \
   docs/adr/ADR-011-ambiente-por-diretorio.md \
   docs/adr/ADR-012-sonarqube-community.md \
+  docs/adr/ADR-013-cache-valkey-por-aplicacao.md \
+  docs/adr/ADR-014-leitura-e-particionamento-sem-sharding.md \
   --from=gfm \
   --to=html5 \
   --standalone \

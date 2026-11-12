@@ -18,7 +18,7 @@ Secretaria da Fazenda, com 60 aplicações em produção, 12 times de desenvolvi
 on-premises virtualizada.
 
 O documento responde aos oito tópicos do desafio, um arquivo por tópico. Cada decisão vem com a
-alternativa descartada e o custo aceito, e o texto diz onde o desenho ainda é fraco: doze pontos
+alternativa descartada e o custo aceito, e o texto diz onde o desenho ainda é fraco: catorze pontos
 de falha que permanecem e a expectativa de migrar de 40 a 45 das 60 aplicações em doze meses.
 
 O diretório [`exemplos/`](exemplos/) traz os artefatos que sustentam o desenho: pipeline,
@@ -41,8 +41,8 @@ física, com a quantidade de nós de cada cluster, está na Figura 2.1, em
 | Limites declarados | Os pontos de falha que permanecem, em [docs/05](docs/05-resiliencia.md), e a expectativa real de migração, em [docs/08](docs/08-plano-evolucao.md) |
 | Conferir o enunciado | [O enunciado, item por item](#o-enunciado-item-por-item): cada pergunta do desafio com a resposta curta e o link para o documento do tópico |
 | 20 minutos | [docs/01](docs/01-visao-geral.md), [docs/03](docs/03-cicd.md) e [docs/05](docs/05-resiliencia.md): o desenho, o caminho do commit até produção e o que acontece quando um datacenter cai |
-| Leitura técnica | [docs/09](docs/09-gitops-argocd.md) com [`exemplos/gitops/`](exemplos/gitops/), e [docs/04](docs/04-observabilidade.md) com [`exemplos/observabilidade/`](exemplos/observabilidade/) |
-| Decisões | As [doze ADRs](#decisões-de-arquitetura), cada uma com a alternativa descartada e o critério que a faria mudar |
+| Leitura técnica | [docs/09](docs/09-gitops-argocd.md) com [`exemplos/gitops/`](exemplos/gitops/), [docs/10](docs/10-dados.md) com o cache do chart base, e [docs/04](docs/04-observabilidade.md) com [`exemplos/observabilidade/`](exemplos/observabilidade/) |
+| Decisões | As [catorze ADRs](#decisões-de-arquitetura), cada uma com a alternativa descartada e o critério que a faria mudar |
 
 ## A proposta em uma página
 
@@ -138,9 +138,9 @@ enunciado, as tabelas abaixo dão a resposta curta e o link para a seção que a
 |---|---|---|
 | Falha de um nó | O Kubernetes reagenda os pods; as três réplicas ficam espalhadas por rack, e o vSphere reinicia a máquina. Não há ação humana | [Falha de um nó](docs/05-resiliencia.md#falha-de-um-nó) |
 | Falha de um cluster | O nível 1 já roda nos dois sítios, e o HAProxy retira o cluster com falha em cerca de 6 segundos. O nível 2 sobe as réplicas em DC2 por decisão humana | [Falha de um cluster inteiro](docs/05-resiliencia.md#falha-de-um-cluster-inteiro) |
-| Falha de um banco de dados | Dentro do sítio, a troca de papel é automática (Data Guard e Patroni). Entre sítios, é sempre decisão humana, para nunca existirem dois bancos principais com dado fiscal divergente | [Falha de um banco de dados](docs/05-resiliencia.md#falha-de-um-banco-de-dados) |
+| Falha de um banco de dados | Dentro do sítio, a troca de papel é automática (Data Guard e Patroni). Entre sítios, é sempre decisão humana, para nunca existirem dois bancos principais com dado fiscal divergente. Cache e réplica de relatório aliviam a carga, mas o banco é dimensionado sem eles, e não há sharding | [Falha de um banco de dados](docs/05-resiliencia.md#falha-de-um-banco-de-dados) · [Leitura, cache e particionamento](docs/10-dados.md) |
 | Falha de um datacenter inteiro | O nível 1 volta a ler em cerca de 9 minutos e a escrever em 20, depois de duas decisões humanas: o DNS, que é reversível, e o banco, que não é (Figura 5.1) | [Falha de um datacenter inteiro](docs/05-resiliencia.md#falha-de-um-datacenter-inteiro) |
-| Quais componentes têm redundância e quais pontos de falha restam | A redundância está numa tabela por componente. Restam doze pontos de falha, declarados com a mitigação e o risco residual de cada um. O mais provável é a própria equipe; o mais perigoso, a partição de rede com os dois sítios vivos | [O que tem redundância](docs/05-resiliencia.md#o-que-tem-redundância) · [Pontos de falha que permanecem](docs/05-resiliencia.md#pontos-de-falha-que-permanecem) |
+| Quais componentes têm redundância e quais pontos de falha restam | A redundância está numa tabela por componente. Restam catorze pontos de falha, declarados com a mitigação e o risco residual de cada um. O mais provável é a própria equipe; o mais perigoso, a partição de rede com os dois sítios vivos | [O que tem redundância](docs/05-resiliencia.md#o-que-tem-redundância) · [Pontos de falha que permanecem](docs/05-resiliencia.md#pontos-de-falha-que-permanecem) |
 
 ### 6 · Infraestrutura como código
 
@@ -189,10 +189,12 @@ contexto, a alternativa descartada, a consequência aceita e o critério que far
 | [010](docs/adr/ADR-010-promocao-por-merge-request.md) | Promoção por merge request aberto pela esteira | Argo CD Image Updater ou Kargo |
 | [011](docs/adr/ADR-011-ambiente-por-diretorio.md) | Ambiente é diretório no mesmo branch | Um branch por ambiente |
 | [012](docs/adr/ADR-012-sonarqube-community.md) | SonarQube Community, com cobertura do merge request pelo `diff-cover` | Edição Developer |
+| [013](docs/adr/ADR-013-cache-valkey-por-aplicacao.md) | Cache-aside com Valkey em instância por aplicação, dentro do cluster | Redis, Red Hat Data Grid ou cache compartilhado |
+| [014](docs/adr/ADR-014-leitura-e-particionamento-sem-sharding.md) | Réplica de relatório e particionamento por período, sem sharding | Ler da réplica síncrona; sharding com Citus |
 
 ## Como ler os diagramas
 
-As doze figuras usam a mesma convenção: a cor indica o plano da peça, e o traço e a forma indicam
+As treze figuras usam a mesma convenção: a cor indica o plano da peça, e o traço e a forma indicam
 o estado. Cada figura tem número e título acima, numerada pelo documento onde está.
 
 | Cor | Plano | Exemplos |
@@ -223,7 +225,7 @@ Cada selo tem a cor do plano a que a ferramenta pertence, a mesma das figuras.
 |---|---|
 | **Entrega** | ![GitLab CI](https://img.shields.io/badge/GitLab%20CI-0072B2?style=flat-square&logo=gitlab&logoColor=white) ![Harbor](https://img.shields.io/badge/Harbor-0072B2?style=flat-square&logo=harbor&logoColor=white) ![Argo CD](https://img.shields.io/badge/Argo%20CD-0072B2?style=flat-square&logo=argo&logoColor=white) ![SonarQube](https://img.shields.io/badge/SonarQube-0072B2?style=flat-square&logo=sonarqube&logoColor=white) ![Trivy](https://img.shields.io/badge/Trivy-0072B2?style=flat-square&logo=trivy&logoColor=white) ![Cosign](https://img.shields.io/badge/Cosign-0072B2?style=flat-square) ![Kyverno](https://img.shields.io/badge/Kyverno-0072B2?style=flat-square) ![Keycloak](https://img.shields.io/badge/Keycloak-0072B2?style=flat-square&logo=keycloak&logoColor=white) ![Terraform](https://img.shields.io/badge/Terraform-0072B2?style=flat-square&logo=terraform&logoColor=white) ![Ansible](https://img.shields.io/badge/Ansible-0072B2?style=flat-square&logo=ansible&logoColor=white) |
 | **Execução** | ![OpenShift](https://img.shields.io/badge/OpenShift-009E73?style=flat-square&logo=redhatopenshift&logoColor=white) ![RKE2 sob Rancher](https://img.shields.io/badge/RKE2%20sob%20Rancher-009E73?style=flat-square&logo=rancher&logoColor=white) ![Helm](https://img.shields.io/badge/Helm-009E73?style=flat-square&logo=helm&logoColor=white) ![Kustomize](https://img.shields.io/badge/Kustomize-009E73?style=flat-square&logo=kubernetes&logoColor=white) ![Argo Rollouts](https://img.shields.io/badge/Argo%20Rollouts-009E73?style=flat-square&logo=argo&logoColor=white) ![Spring Boot](https://img.shields.io/badge/Spring%20Boot-009E73?style=flat-square&logo=springboot&logoColor=white) ![vSphere](https://img.shields.io/badge/VMware%20vSphere-009E73?style=flat-square&logo=vmware&logoColor=white) |
-| **Dados e segredos** | ![Oracle](https://img.shields.io/badge/Oracle-B87D00?style=flat-square&logo=oracle&logoColor=white) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-B87D00?style=flat-square&logo=postgresql&logoColor=white) ![Patroni](https://img.shields.io/badge/Patroni-B87D00?style=flat-square) ![Conjur](https://img.shields.io/badge/CyberArk%20Conjur-B87D00?style=flat-square) ![External Secrets](https://img.shields.io/badge/External%20Secrets-B87D00?style=flat-square) ![MinIO](https://img.shields.io/badge/MinIO-B87D00?style=flat-square&logo=minio&logoColor=white) ![Velero](https://img.shields.io/badge/Velero-B87D00?style=flat-square) |
+| **Dados e segredos** | ![Oracle](https://img.shields.io/badge/Oracle-B87D00?style=flat-square&logo=oracle&logoColor=white) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-B87D00?style=flat-square&logo=postgresql&logoColor=white) ![Patroni](https://img.shields.io/badge/Patroni-B87D00?style=flat-square) ![Valkey](https://img.shields.io/badge/Valkey-B87D00?style=flat-square) ![Conjur](https://img.shields.io/badge/CyberArk%20Conjur-B87D00?style=flat-square) ![External Secrets](https://img.shields.io/badge/External%20Secrets-B87D00?style=flat-square) ![MinIO](https://img.shields.io/badge/MinIO-B87D00?style=flat-square&logo=minio&logoColor=white) ![Velero](https://img.shields.io/badge/Velero-B87D00?style=flat-square) |
 | **Observação** | ![Prometheus](https://img.shields.io/badge/Prometheus-B05A8C?style=flat-square&logo=prometheus&logoColor=white) ![Thanos](https://img.shields.io/badge/Thanos-B05A8C?style=flat-square&logo=thanos&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-B05A8C?style=flat-square&logo=grafana&logoColor=white) ![Loki](https://img.shields.io/badge/Loki-B05A8C?style=flat-square) ![Tempo](https://img.shields.io/badge/Tempo-B05A8C?style=flat-square) ![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-B05A8C?style=flat-square&logo=opentelemetry&logoColor=white) |
 | **Tráfego** | ![HAProxy](https://img.shields.io/badge/HAProxy-D55E00?style=flat-square) ![Apache](https://img.shields.io/badge/Apache-D55E00?style=flat-square&logo=apache&logoColor=white) ![DNS](https://img.shields.io/badge/DNS%20com%20TTL%20de%2060%20s-D55E00?style=flat-square) |
 
@@ -250,7 +252,7 @@ desenhadas, sem experiência de operação por trás.
 |---|---|
 | [`exemplos/ci/`](exemplos/ci/) | Pipeline da aplicação Java e os templates centrais que ela inclui, com a estratégia de testes |
 | [`exemplos/gitops/`](exemplos/gitops/) | ApplicationSet e AppProject, valores da aplicação, overlays por ambiente e por sítio, canário, configuração do Argo CD e o pipeline do repositório de manifestos |
-| [`exemplos/helm/`](exemplos/helm/) | Chart base: Route ou Ingress, sondas, limites, escala automática, orçamento de interrupção, referência a segredo, migração de banco e teste de fumaça como ganchos |
+| [`exemplos/helm/`](exemplos/helm/) | Chart base: Route ou Ingress, sondas, limites, escala automática, orçamento de interrupção, referência a segredo, cache Valkey opcional, migração de banco e teste de fumaça como ganchos |
 | [`exemplos/segredos/`](exemplos/segredos/) | Política do Conjur e a conexão do External Secrets com ele, por identidade de ServiceAccount |
 | [`exemplos/terraform/`](exemplos/terraform/) | Módulo que cria nós do RKE2 no vSphere; o mesmo padrão serve às máquinas fora do OpenShift |
 | [`exemplos/ansible/`](exemplos/ansible/) | Role de linha de base do sistema operacional |
@@ -279,6 +281,8 @@ documento, e cada uma aponta o que mudaria se fosse falsa.
 | A maior parte das aplicações é escrita em Java | O exemplo e o primeiro template de linguagem passam a ser os da linguagem predominante no inventário. O chart base já prevê .NET, e o template de pipeline .NET entra na fase 1; o desenho não muda |
 | A Secretaria já usa o CyberArk PAM para governar contas privilegiadas, e há orçamento para o Conjur comercial | O cofre passa a ser o OpenBao, com credencial dinâmica de banco no lugar da rotação; o consumo pelo External Secrets continua igual (ADR-008) |
 | A equipe de plataforma começa com quatro pessoas e chega a seis na fase 2 | Com menos gente, a fase 3 (segundo sítio e contingência do Argo CD) escorrega seis meses, e o plantão contínuo da plataforma não fecha a escala |
+| A escrita de cada aplicação cabe numa única instância principal de banco, com escala vertical e particionamento de tabela por período | O sharding entra na aplicação que estourar, começando pelo Citus no PostgreSQL daquele banco, e a troca de papel entre sítios passa a coordenar vários bancos principais (ADR-014) |
+| Boa parte da leitura das aplicações de atendimento recai sobre dado de referência e consulta que tolera minutos de atraso | O cache rende pouco, e a folga de leitura passa a vir da réplica de relatório e da principal. O desenho não muda; o ganho esperado do Valkey cai (ADR-013) |
 | Os times de desenvolvimento podem assumir o plantão da própria aplicação | Se forem fábrica de software contratada, o plantão da aplicação vira cláusula de contrato ou passa à central de operações da Secretaria, com roteiro de resposta obrigatório |
 | As áreas de negócio aceitam a janela de mudança de produção em dias úteis, das 7h às 19h | A janela vira configuração por projeto no Argo CD; o desenho não muda, só o horário |
 | O vSphere existente comporta cerca de 50 máquinas virtuais novas: cerca de 680 vCPU e 2,7 TB de memória somando os cinco clusters (15 nós de controle de 8 vCPU e 32 GB, 35 nós de trabalho de 16 vCPU e 64 GB) | A compra de hospedeiros entra na fase 0, e a fase 1 desloca pelo prazo de compra pública, de três a seis meses |
@@ -294,7 +298,8 @@ documento, e cada uma aponta o que mudaria se fosse falsa.
 ├── docs/
 │   ├── 01 … 08          os oito tópicos do desafio
 │   ├── 09               aprofundamento de GitOps com Argo CD
-│   ├── adr/             as doze decisões de arquitetura
+│   ├── 10               aprofundamento do plano de dados: leitura, cache e particionamento
+│   ├── adr/             as catorze decisões de arquitetura
 │   ├── diagramas/       panorama e topologia em .drawio.svg
 │   └── assets/          capa desta página
 ├── exemplos/            artefatos que sustentam o desenho, em dez áreas
